@@ -1,0 +1,14 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+src-tauri/target/
+src-tauri/gen/
+
+# generated dev snapshot of real data (machine-specific)
+public/dev-dashboard.json
+
+# misc
+.DS_Store
+*.log

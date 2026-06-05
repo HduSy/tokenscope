@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Tokenscope · 菜单栏面板</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
+<style>
+  html, body { margin: 0; padding: 0; background: #f0eee9; }
+  * { box-sizing: border-box; }
+  .stage { display: flex; flex-wrap: wrap; gap: 40px; justify-content: center; align-items: flex-start; padding: 40px 24px 80px; }
+  .board { width: 372px; border-radius: 16px; overflow: hidden; box-shadow: 0 24px 70px rgba(40,50,45,0.22); }
+  .board-label { font: 600 12px 'IBM Plex Sans', system-ui, sans-serif; color: rgba(20,24,22,0.55); letter-spacing: .02em; margin: 0 0 12px 2px; }
+  .col { display: flex; flex-direction: column; }
+  .om-scroll::-webkit-scrollbar { width: 9px; }
+  .om-scroll::-webkit-scrollbar-thumb { background: rgba(140,140,140,0.38); border-radius: 9px; border: 2px solid transparent; background-clip: content-box; }
+  .om-scroll::-webkit-scrollbar-thumb:hover { background: rgba(140,140,140,0.6); background-clip: content-box; }
+  .om-scroll::-webkit-scrollbar-track { background: transparent; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin="anonymous"></script>
+
+<script type="text/babel">
+const { useState, useId, useRef } = React;
+
+// =====================================================================
+// DATA — local, cross-provider model usage (window.TD equivalent)
+// =====================================================================
+const ACCENT = '#1f9d63', ACCENT_SOFT = '#7fd1a6';
+
+const WEEK = [
+  { label: 'Mon', input: 0.92, output: 0.48 },
+  { label: 'Tue', input: 1.36, output: 0.74 },
+  { label: 'Wed', input: 1.18, output: 0.62 },
+  { label: 'Thu', input: 1.71, output: 0.89 },
+  { label: 'Fri', input: 1.52, output: 0.78 },
+  { label: 'Sat', input: 0.58, output: 0.31 },
+  { label: 'Sun', input: 0.86, output: 0.44 },
+];
+
+const DAY = (() => {
+  const shape = [0.05,0.03,0.02,0.02,0.03,0.06,0.12,0.28,0.46,0.62,0.74,0.81,
+                 0.69,0.58,0.83,0.92,0.78,0.64,0.49,0.38,0.31,0.22,0.14,0.08];
+  return shape.map((v, h) => ({
+    label: h % 6 === 0 ? String(h).padStart(2, '0') : '',
+    input: +(v * 0.11).toFixed(3),
+    output: +(v * 0.058).toFixed(3),
+  }));
+})();
+
+const MONTH = (() => {
+  const arr = [];
+  for (let d = 1; d <= 30; d++) {
+    const dow = (d - 1) % 7;
+    const weekend = dow === 5 || dow === 6;
+    const base = weekend ? 0.42 : 0.92;
+    const wobble = 0.78 + 0.44 * Math.abs(Math.sin(d * 1.7));
+    const v = base * wobble;
+    arr.push({
+      label: (d === 1 || d % 5 === 0) ? String(d) : '',
+      input: +(v * 0.62).toFixed(3),
+      output: +(v * 0.32).toFixed(3),
+    });
+  }
+  return arr;
+})();
+
+const MODELS = [
+  { name: 'Claude Sonnet 4.5', vendor: 'Anthropic', tokens: 5.82, cost: 18.40, color: '#1f9d63' },
+  { name: 'Claude Opus 4.1',   vendor: 'Anthropic', tokens: 3.07, cost: 19.10, color: '#34c27e' },
+  { name: 'GPT-5',             vendor: 'OpenAI',     tokens: 1.94, cost: 6.20,  color: '#6ad0a0' },
+  { name: 'Gemini 2.5 Pro',    vendor: 'Google',     tokens: 0.91, cost: 2.40,  color: '#a7e3c5' },
+  { name: 'Llama 3.3 70B',     vendor: 'Local',      tokens: 0.66, cost: 0.00,  color: '#4b5a52' },
+];
+
+const METRICS = {
+  totalTokens: 12.40, inputTokens: 8.13, outputTokens: 4.27, cost: 46.10,
+  mcpCalls: 1284, skillCalls: 356, requests: 2847, sessions: 143,
+  deltaTokens: +0.14, deltaCost: -0.06,
+};
+
+const COST_TREND = [5.2, 7.8, 6.4, 9.1, 8.3, 3.1, 6.2];
+const REQ_TREND = [288, 412, 360, 503, 451, 188, 645];
+
+function fmtTokens(m) { if (m >= 1) return m.toFixed(2) + 'M'; return Math.round(m * 1000) + 'K'; }
+function fmtInt(n) { return n.toLocaleString('en-US'); }
+function pct(part, whole) { return Math.round((part / whole) * 100); }
+function fmtMoney(v) {
+  if (v >= 100000) return '$' + Math.round(v / 1000) + 'K';
+  if (v >= 10000) return '$' + (v / 1000).toFixed(1) + 'K';
+  return '$' + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function linePath(values, w, h, pad = 2) {
+  const max = Math.max(...values), min = Math.min(...values);
+  const range = max - min || 1;
+  const n = values.length;
+  const px = (i) => pad + (i / (n - 1)) * (w - pad * 2);
+  const py = (v) => pad + (1 - (v - min) / range) * (h - pad * 2);
+  const pts = values.map((v, i) => [px(i), py(v)]);
+  let d = `M ${pts[0][0].toFixed(1)} ${pts[0][1].toFixed(1)}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
+    const c1x = p1[0] + (p2[0] - p0[0]) / 6, c1y = p1[1] + (p2[1] - p0[1]) / 6;
+    const c2x = p2[0] - (p3[0] - p1[0]) / 6, c2y = p2[1] - (p3[1] - p1[1]) / 6;
+    d += ` C ${c1x.toFixed(1)} ${c1y.toFixed(1)}, ${c2x.toFixed(1)} ${c2y.toFixed(1)}, ${p2[0].toFixed(1)} ${p2[1].toFixed(1)}`;
+  }
+  return { d, px, py, pts };
+}
+
+const WEEK_TOTAL = MODELS.reduce((s, m) => s + m.tokens, 0);
+const WEEK_COST = MODELS.reduce((s, m) => s + m.cost, 0);
+const PERIODS = {
+  'Day': {
+    series: DAY,
+    metrics: { totalTokens: 1.94, inputTokens: 1.27, outputTokens: 0.67, cost: 7.20,
+      mcpCalls: 198, skillCalls: 54, requests: 441, sessions: 23, deltaTokens: -0.18, deltaCost: -0.12,
+      servers: 9, skills: 12 },
+    reqTrend: [12, 41, 58, 92, 74, 61, 38, 19],
+    costTrend: [0.4, 1.1, 0.9, 1.6, 1.3, 0.8, 0.5, 0.6],
+  },
+  'Week': {
+    series: WEEK,
+    metrics: { ...METRICS, servers: 14, skills: 22 },
+    reqTrend: REQ_TREND, costTrend: COST_TREND,
+  },
+  'Month': {
+    series: MONTH,
+    metrics: { totalTokens: 27.50, inputTokens: 18.10, outputTokens: 9.40, cost: 101.30,
+      mcpCalls: 5230, skillCalls: 1442, requests: 11680, sessions: 602, deltaTokens: +0.11, deltaCost: +0.09,
+      servers: 18, skills: 28 },
+    reqTrend: [1880, 2410, 2050, 3340], costTrend: [22.4, 28.1, 21.6, 29.2],
+  },
+};
+
+function modelsFor(periodKey) {
+  const mm = PERIODS[periodKey].metrics;
+  const rt = mm.totalTokens / WEEK_TOTAL, rc = mm.cost / WEEK_COST;
+  return MODELS.map(m => ({ ...m, tokens: +(m.tokens * rt).toFixed(2), cost: +(m.cost * rc).toFixed(2) }));
+}
+
+const MCP_SERVERS = [
+  { name: 'filesystem', count: 312 }, { name: 'github', count: 268 },
+  { name: 'memory', count: 198 }, { name: 'fetch', count: 156 },
+  { name: 'postgres', count: 142 }, { name: 'puppeteer', count: 98 },
+  { name: 'slack', count: 64 }, { name: 'brave-search', count: 46 },
+];
+const SKILLS = [
+  { name: 'pdf-reader', count: 92 }, { name: 'web-search', count: 78 },
+  { name: 'deck-builder', count: 61 }, { name: 'code-runner', count: 54 },
+  { name: 'image-gen', count: 38 }, { name: 'data-viz', count: 33 },
+];
+function callsFor(list, periodTotal) {
+  const base = list.reduce((s, x) => s + x.count, 0);
+  const r = periodTotal / base;
+  return list.map(x => ({ ...x, count: Math.round(x.count * r) }))
+    .filter(x => x.count > 0).sort((a, b) => b.count - a.count);
+}
+
+const YEAR_DAILY = (() => {
+  const days = [];
+  const today = new Date(2026, 5, 5);
+  const start = new Date(today);
+  start.setDate(start.getDate() - 25 * 7 - today.getDay());
+  for (let i = 0; ; i++) {
+    const d = new Date(start); d.setDate(start.getDate() + i);
+    if (d > today) break;
+    const dow = d.getDay();
+    const weekend = dow === 0 || dow === 6;
+    const seasonal = 0.55 + 0.45 * Math.sin((i / 182) * Math.PI * 2 + 1);
+    const noise = Math.abs(Math.sin(i * 12.9898) * 43758.5453 % 1);
+    let v = (weekend ? 0.35 : 1) * seasonal * (0.4 + noise);
+    if (noise < 0.12) v = 0;
+    const tokens = +(v * 2.4).toFixed(2);
+    days.push({ date: new Date(d), tokens });
+  }
+  const maxV = Math.max(...days.map(x => x.tokens));
+  days.forEach(x => {
+    const f = x.tokens / maxV;
+    x.level = x.tokens === 0 ? 0 : f < 0.25 ? 1 : f < 0.5 ? 2 : f < 0.75 ? 3 : 4;
+  });
+  return days;
+})();
+
+function fmtDate(d) { return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }); }
+
+const TD = { ACCENT, ACCENT_SOFT, DAY, WEEK, MONTH, MODELS, METRICS, COST_TREND, REQ_TREND,
+  PERIODS, modelsFor, WEEK_TOTAL, MCP_SERVERS, SKILLS, callsFor, YEAR_DAILY, fmtDate,
+  fmtTokens, fmtInt, pct, fmtMoney, linePath };
+
+// =====================================================================
+// THEMES
+// =====================================================================
+const TH = {
+  dark: {
+    ui: "'IBM Plex Sans', system-ui, sans-serif",
+    mono: "'IBM Plex Mono', ui-monospace, monospace",
+    display: "'Space Grotesk', system-ui, sans-serif",
+    accent: '#27b06e', accentSoft: '#5fcf9c',
+    text: 'rgba(255,255,255,0.94)', dim: 'rgba(255,255,255,0.52)', faint: 'rgba(255,255,255,0.32)',
+    gridLine: 'rgba(255,255,255,0.06)', card: '#1f2226',
+    segBg: 'rgba(255,255,255,0.06)', segBorder: 'rgba(255,255,255,0.09)',
+    segOnBg: 'rgba(255,255,255,0.15)', segOnText: '#fff', segOffText: 'rgba(255,255,255,0.55)',
+    segOnShadow: '0 1px 2px rgba(0,0,0,0.35)', tip: '#34383d',
+  },
+  light: {
+    ui: "'IBM Plex Sans', system-ui, sans-serif",
+    mono: "'IBM Plex Mono', ui-monospace, monospace",
+    display: "'Space Grotesk', system-ui, sans-serif",
+    accent: '#178a55', accentSoft: '#8fd9b4',
+    text: 'rgba(17,22,19,0.94)', dim: 'rgba(17,22,19,0.5)', faint: 'rgba(17,22,19,0.32)',
+    gridLine: 'rgba(0,0,0,0.06)', card: '#ffffff',
+    segBg: 'rgba(0,0,0,0.05)', segBorder: 'rgba(0,0,0,0.07)',
+    segOnBg: '#ffffff', segOnText: '#111', segOffText: 'rgba(0,0,0,0.5)',
+    segOnShadow: '0 1px 2px rgba(0,0,0,0.12)', tip: '#1d2420',
+  },
+};
+
+const WALL = {
+  dark: 'radial-gradient(120% 80% at 80% 0%, #1c3a30 0%, #15191c 45%, #0e1012 100%)',
+  light: 'radial-gradient(120% 80% at 80% 0%, #d6e9df 0%, #eef1ee 45%, #e4e7e4 100%)',
+};
+
+// =====================================================================
+// CHROME + CHART PRIMITIVES
+// =====================================================================
+function TokenGlyph({ color = '#1f9d63', size = 14 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 14 14">
+      <rect x="0.6" y="0.6" width="12.8" height="12.8" rx="3.2" fill="none" stroke={color} strokeWidth="1.3" />
+      <rect x="3" y="7.5" width="1.7" height="3.2" rx="0.6" fill={color} />
+      <rect x="6.15" y="5" width="1.7" height="5.7" rx="0.6" fill={color} />
+      <rect x="9.3" y="3" width="1.7" height="7.7" rx="0.6" fill={color} />
+    </svg>
+  );
+}
+
+function MenuBar({ theme, dark, highlight = false }) {
+  const t = theme;
+  const c = dark ? 'rgba(255,255,255,0.92)' : 'rgba(0,0,0,0.82)';
+  const dim = dark ? 'rgba(255,255,255,0.55)' : 'rgba(0,0,0,0.5)';
+  return (
+    <div style={{
+      height: 26, display: 'flex', alignItems: 'center', gap: 15, padding: '0 11px',
+      background: dark ? 'rgba(28,30,32,0.5)' : 'rgba(250,250,250,0.6)',
+      borderBottom: `1px solid ${dark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)'}`,
+      backdropFilter: 'blur(10px)', WebkitBackdropFilter: 'blur(10px)',
+    }}>
+      <svg width="13" height="13" viewBox="0 0 16 16" style={{ opacity: dark ? 0.92 : 0.78 }}><path fill={c} d="M8 1.5a6.5 6.5 0 100 13 6.5 6.5 0 000-13zm0 1.2a5.3 5.3 0 110 10.6A5.3 5.3 0 018 2.7z"/></svg>
+      <span style={{ font: `600 12px ${t.ui}`, color: c }}>Finder</span>
+      <span style={{ font: `400 12px ${t.ui}`, color: dim }}>File</span>
+      <span style={{ font: `400 12px ${t.ui}`, color: dim }}>Edit</span>
+      <span style={{ marginLeft: 'auto' }} />
+      <span style={{ font: `400 12px ${t.ui}`, color: dim }}>􀙇</span>
+      <span style={{ font: `400 12px ${t.ui}`, color: dim }}>􀖀</span>
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 5, padding: '2px 6px', borderRadius: 5,
+        background: highlight ? (dark ? 'rgba(255,255,255,0.14)' : 'rgba(0,0,0,0.08)') : 'transparent',
+      }}>
+        <TokenGlyph color={t.accent} size={13} />
+        <span style={{ font: `600 11px ${t.mono}`, color: c, letterSpacing: '.01em' }}>12.4M</span>
+      </div>
+      <span style={{ font: `500 12px ${t.ui}`, color: dim }}>Mon 9:41</span>
+    </div>
+  );
+}
+
+function PanelCaret({ color, left = 18 }) {
+  return (
+    <div style={{ position: 'absolute', top: -7, left, width: 0, height: 0,
+      borderLeft: '8px solid transparent', borderRight: '8px solid transparent',
+      borderBottom: `8px solid ${color}`, filter: 'drop-shadow(0 -1px 1px rgba(0,0,0,0.06))' }} />
+  );
+}
+
+function Desk({ dark, theme, children, caretLeft, caretColor }) {
+  return (
+    <div style={{ width: '100%', height: '100%', background: WALL[dark ? 'dark' : 'light'], position: 'relative', fontFamily: theme.ui }}>
+      <MenuBar theme={theme} dark={dark} highlight />
+      <div style={{ position: 'relative', padding: '12px 12px' }}>
+        <div style={{ position: 'relative' }}>
+          <PanelCaret color={caretColor} left={caretLeft} />
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Segmented({ value = 'Week', items = ['Day', 'Week', 'Month'], theme, onSelect }) {
+  const t = theme;
+  return (
+    <div style={{ display: 'inline-flex', padding: 2, borderRadius: 7, background: t.segBg, border: `1px solid ${t.segBorder}`, gap: 2 }}>
+      {items.map((it) => {
+        const on = it === value;
+        return (
+          <div key={it} onClick={() => onSelect && onSelect(it)} style={{
+            font: `600 11px ${t.ui}`, letterSpacing: '.02em', padding: '3px 11px', borderRadius: 5, cursor: 'pointer', userSelect: 'none',
+            color: on ? t.segOnText : t.segOffText, background: on ? t.segOnBg : 'transparent',
+            boxShadow: on ? t.segOnShadow : 'none', transition: 'color .15s, background .15s',
+          }}>{it}</div>
+        );
+      })}
+    </div>
+  );
+}
+
+function BarChart({ data, theme, height = 96, accent, accentSoft, showGrid = true, radius = 3 }) {
+  const t = theme;
+  accent = accent || t.accent; accentSoft = accentSoft || t.accentSoft;
+  const max = Math.max(...data.map(d => d.input + d.output));
+  const n = data.length;
+  const gapPct = Math.max(0.8, Math.min(6, 32 / n));
+  const effRadius = n > 16 ? 1 : radius;
+  return (
+    <div>
+      <div style={{ position: 'relative', height, display: 'flex', alignItems: 'flex-end', gap: `${gapPct}%` }}>
+        {showGrid && [0.25, 0.5, 0.75, 1].map((g, i) => (
+          <div key={i} style={{ position: 'absolute', left: 0, right: 0, bottom: `${g * 100}%`, borderTop: `1px solid ${t.gridLine}` }} />
+        ))}
+        {data.map((d, i) => {
+          const hO = (d.output / max) * height, hI = (d.input / max) * height;
+          return (
+            <div key={i} style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', position: 'relative', zIndex: 1 }}>
+              <div style={{ height: hO, background: accentSoft, borderRadius: `${effRadius}px ${effRadius}px 0 0` }} />
+              <div style={{ height: hI, background: accent }} />
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ display: 'flex', gap: `${gapPct}%`, marginTop: 6 }}>
+        {data.map((d, i) => (
+          <div key={i} style={{ flex: 1, textAlign: 'center', font: `500 9px ${t.mono}`, color: t.dim, letterSpacing: '.03em' }}>{d.label}</div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function Sparkline({ values, theme, width = 80, height = 24, accent, strokeW = 1.6 }) {
+  const t = theme; accent = accent || t.accent;
+  const { d, pts } = TD.linePath(values, width, height, strokeW + 1);
+  return (
+    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ display: 'block', overflow: 'visible' }}>
+      <path d={d} fill="none" stroke={accent} strokeWidth={strokeW} strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx={pts[pts.length - 1][0]} cy={pts[pts.length - 1][1]} r="2.1" fill={accent} />
+    </svg>
+  );
+}
+
+function CostDonut({ models, theme, size = 104, thickness = 16, valueKey = 'cost' }) {
+  const t = theme;
+  const [hi, setHi] = useState(-1);
+  const total = models.reduce((s, m) => s + m[valueKey], 0);
+  const cx = size / 2, cy = size / 2;
+  const rOut = (size - 2) / 2, rIn = rOut - thickness;
+  const gap = 0.045;
+  let a = -Math.PI / 2;
+  const arc = (a0, a1, rO, rI) => {
+    const large = (a1 - a0) > Math.PI ? 1 : 0;
+    const x0 = cx + rO * Math.cos(a0), y0 = cy + rO * Math.sin(a0);
+    const x1 = cx + rO * Math.cos(a1), y1 = cy + rO * Math.sin(a1);
+    const x2 = cx + rI * Math.cos(a1), y2 = cy + rI * Math.sin(a1);
+    const x3 = cx + rI * Math.cos(a0), y3 = cy + rI * Math.sin(a0);
+    return `M ${x0.toFixed(2)} ${y0.toFixed(2)} A ${rO} ${rO} 0 ${large} 1 ${x1.toFixed(2)} ${y1.toFixed(2)} L ${x2.toFixed(2)} ${y2.toFixed(2)} A ${rI} ${rI} 0 ${large} 0 ${x3.toFixed(2)} ${y3.toFixed(2)} Z`;
+  };
+  const wedges = models.map((m, i) => {
+    const frac = m[valueKey] / total;
+    const a0 = a + gap / 2, a1 = a + frac * 2 * Math.PI - gap / 2;
+    a += frac * 2 * Math.PI;
+    const on = hi === i;
+    return { m, i, d: arc(a0, a1, on ? rOut + 2 : rOut, rIn) };
+  });
+  const cur = hi >= 0 ? models[hi] : null;
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+      <div style={{ position: 'relative', width: size, height: size, flex: '0 0 auto' }}>
+        <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{ overflow: 'visible' }}>
+          {wedges.map((w) => (
+            <path key={w.i} d={w.d} fill={w.m.color}
+              opacity={hi === -1 || hi === w.i ? 1 : 0.32}
+              onMouseEnter={() => setHi(w.i)} onMouseLeave={() => setHi(-1)}
+              style={{ transition: 'opacity .14s', cursor: 'default' }} />
+          ))}
+        </svg>
+        {(() => {
+          const amount = cur ? cur.cost : total;
+          const txt = TD.fmtMoney(amount);
+          const avail = (size - 2 - thickness * 2) * 0.98;
+          const base = cur ? 15 : 17;
+          const fit = Math.min(base, Math.max(10, avail / (txt.length * 0.62)));
+          return (
+            <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
+              <span style={{ font: `600 ${fit.toFixed(1)}px ${t.mono}`, color: cur ? cur.color : t.text, lineHeight: 1, letterSpacing: '-.01em' }}>{txt}</span>
+            </div>
+          );
+        })()}
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        {models.map((m, i) => (
+          <div key={i} onMouseEnter={() => setHi(i)} onMouseLeave={() => setHi(-1)}
+            style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '2.5px 0', opacity: hi === -1 || hi === i ? 1 : 0.45, transition: 'opacity .14s', cursor: 'default', userSelect: 'none' }}>
+            <span style={{ width: 7, height: 7, borderRadius: 2, background: m.color, flex: '0 0 auto' }} />
+            <span style={{ font: `500 10.5px ${t.ui}`, color: t.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1, fontWeight: hi === i ? 600 : 500 }}>{m.name.replace('Claude ', '')}</span>
+            <span style={{ font: `600 10.5px ${t.mono}`, color: hi === i ? m.color : t.dim, flex: '0 0 auto' }}>{TD.fmtMoney(m.cost)}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function BarList({ items, theme, accent, limit = 5 }) {
+  const t = theme; accent = accent || t.accent;
+  const shown = items.slice(0, limit);
+  const max = Math.max(...items.map(i => i.count), 1);
+  const more = items.length - shown.length;
+  return (
+    <div>
+      {shown.map((it, i) => (
+        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '3px 0' }}>
+          <span style={{ font: `500 10.5px ${t.mono}`, color: t.text, flex: '0 0 96px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{it.name}</span>
+          <div style={{ flex: 1, height: 5, borderRadius: 3, background: t.gridLine, overflow: 'hidden' }}>
+            <div style={{ width: `${(it.count / max) * 100}%`, height: '100%', background: accent, borderRadius: 3 }} />
+          </div>
+          <span style={{ font: `600 10.5px ${t.mono}`, color: t.dim, flex: '0 0 auto', width: 38, textAlign: 'right' }}>{TD.fmtInt(it.count)}</span>
+        </div>
+      ))}
+      {more > 0 && (
+        <div style={{ font: `500 9.5px ${t.ui}`, color: t.faint, paddingTop: 4 }}>+{more} more</div>
+      )}
+    </div>
+  );
+}
+
+function mix(accent, op, base) { return `color-mix(in srgb, ${accent} ${Math.round(op * 100)}%, ${base})`; }
+
+function Heatmap({ days, theme, accent, gap = 2 }) {
+  const t = theme; accent = accent || t.accent;
+  const [hi, setHi] = useState(null);
+  const [tip, setTip] = useState({ x: 0, y: 0 });
+  const wrapRef = useRef(null);
+  const weeks = [];
+  days.forEach((d) => {
+    const dow = d.date.getDay();
+    if (dow === 0 || weeks.length === 0) weeks.push(new Array(7).fill(null));
+    weeks[weeks.length - 1][dow] = d;
+  });
+  const ramp = (lvl) => { if (lvl === 0) return t.gridLine; const op = [0, 0.28, 0.5, 0.74, 1][lvl]; return mix(accent, op, t.card); };
+  const monthLabels = []; let lastMonth = -1;
+  weeks.forEach((wk, wi) => {
+    const first = wk.find(Boolean);
+    if (first) { const m = first.date.getMonth(); if (m !== lastMonth) { monthLabels.push({ frac: wi / weeks.length, m }); lastMonth = m; } }
+  });
+  const MN = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const onCell = (d, e) => {
+    if (!d) return;
+    const wrap = wrapRef.current.getBoundingClientRect();
+    const r = e.target.getBoundingClientRect();
+    setHi(d); setTip({ x: r.left - wrap.left + r.width / 2, y: r.top - wrap.top });
+  };
+  return (
+    <div ref={wrapRef} style={{ position: 'relative' }}>
+      <div style={{ position: 'relative', height: 12, marginBottom: 3 }}>
+        {monthLabels.map((ml, i) => (
+          <span key={i} style={{ position: 'absolute', left: `${ml.frac * 100}%`, font: `500 8.5px ${t.mono}`, color: t.faint }}>{MN[ml.m]}</span>
+        ))}
+      </div>
+      <div style={{ display: 'flex', gap, width: '100%' }}>
+        {weeks.map((wk, wi) => (
+          <div key={wi} style={{ display: 'flex', flexDirection: 'column', gap, flex: '1 1 0', minWidth: 0 }}>
+            {wk.map((d, di) => (
+              <div key={di}
+                onMouseEnter={d ? (e) => onCell(d, e) : undefined}
+                onMouseLeave={() => setHi(null)}
+                style={{ width: '100%', aspectRatio: '1 / 1', borderRadius: 2,
+                  background: d ? ramp(d.level) : 'transparent' }} />
+            ))}
+          </div>
+        ))}
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 5, justifyContent: 'flex-end', marginTop: 8, font: `500 8.5px ${t.mono}`, color: t.faint }}>
+        <span>Less</span>
+        {[0, 1, 2, 3, 4].map((l) => (<span key={l} style={{ width: 9, height: 9, borderRadius: 2, background: ramp(l) }} />))}
+        <span>More</span>
+      </div>
+      {hi && (
+        <div style={{ position: 'absolute', left: tip.x, top: tip.y - 8, transform: 'translate(-50%,-100%)',
+          background: t.tip, color: '#fff', borderRadius: 6, padding: '5px 8px',
+          font: `500 10px ${t.mono}`, whiteSpace: 'nowrap', pointerEvents: 'none', zIndex: 5,
+          boxShadow: '0 4px 14px rgba(0,0,0,0.35)', maxWidth: '100%' }}>
+          <span style={{ color: accent, fontWeight: 600 }}>{hi.tokens === 0 ? 'No calls' : TD.fmtTokens(hi.tokens) + ' tokens'}</span>
+          <span style={{ opacity: 0.7 }}> · {TD.fmtDate(hi.date)}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// =====================================================================
+// SHARED PANEL PIECES
+// =====================================================================
+function Delta({ v, theme, big }) {
+  const up = v >= 0;
+  const col = up ? theme.accent : '#e0795f';
+  return (
+    <span style={{ font: `600 ${big ? 11 : 10}px ${theme.mono}`, color: col,
+      display: 'inline-flex', alignItems: 'center', gap: 2, padding: big ? '2px 7px' : '1.5px 5px',
+      borderRadius: 5, background: up ? 'rgba(39,176,110,0.14)' : 'rgba(224,121,95,0.16)' }}>
+      {up ? '▲' : '▼'}{Math.abs(Math.round(v * 100))}%
+    </span>
+  );
+}
+
+function ModelRow({ m, max, theme, total }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '5px 0' }}>
+      <span style={{ width: 7, height: 7, borderRadius: 2, background: m.color, flex: '0 0 auto' }} />
+      <div style={{ minWidth: 0, flex: '0 0 118px' }}>
+        <div style={{ font: `500 11.5px ${theme.ui}`, color: theme.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.name}</div>
+      </div>
+      <div style={{ flex: 1, height: 5, borderRadius: 3, background: theme.gridLine, overflow: 'hidden' }}>
+        <div style={{ width: `${(m.tokens / max) * 100}%`, height: '100%', background: m.color, borderRadius: 3 }} />
+      </div>
+      <span style={{ font: `500 10.5px ${theme.mono}`, color: theme.dim, flex: '0 0 auto', width: 42, textAlign: 'right' }}>{TD.fmtTokens(m.tokens)}</span>
+      <span style={{ font: `600 10.5px ${theme.mono}`, color: theme.text, flex: '0 0 auto', width: 30, textAlign: 'right' }}>{TD.pct(m.tokens, total)}%</span>
+    </div>
+  );
+}
+
+function MiniStat({ label, value, sub, theme, accent, children }) {
+  return (
+    <div style={{ background: theme.gridLine, borderRadius: 9, padding: '9px 10px', minWidth: 0 }}>
+      <div style={{ font: `500 9.5px ${theme.ui}`, color: theme.dim, letterSpacing: '.04em', textTransform: 'uppercase' }}>{label}</div>
+      <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginTop: 3, gap: 6 }}>
+        <span style={{ font: `600 17px ${theme.mono}`, color: accent || theme.text, lineHeight: 1 }}>{value}</span>
+        {children}
+      </div>
+      {sub && <div style={{ font: `500 9px ${theme.mono}`, color: theme.faint, marginTop: 3 }}>{sub}</div>}
+    </div>
+  );
+}
+
+// =====================================================================
+// PANEL A · NATIVE PRO
+// =====================================================================
+function PanelA({ dark = true }) {
+  const t = TH[dark ? 'dark' : 'light'];
+  const [period, setPeriod] = useState('Week');
+  const P = TD.PERIODS[period];
+  const M = P.metrics;
+  const models = TD.modelsFor(period);
+  const maxM = Math.max(...models.map(m => m.tokens));
+  const mcpList = TD.callsFor(TD.MCP_SERVERS, M.mcpCalls);
+  const skillList = TD.callsFor(TD.SKILLS, M.skillCalls);
+  const trendSub = { 'Day': 'today 24h', 'Week': 'last 7 days', 'Month': 'last 4 weeks' }[period];
+  const cardBg = dark ? 'rgba(33,36,40,0.82)' : 'rgba(255,255,255,0.9)';
+  const card = (
+    <div style={{
+      width: '100%', borderRadius: 15, background: cardBg,
+      border: `1px solid ${dark ? 'rgba(255,255,255,0.09)' : 'rgba(0,0,0,0.07)'}`,
+      backdropFilter: 'blur(24px)', WebkitBackdropFilter: 'blur(24px)',
+      boxShadow: dark ? '0 18px 50px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.06)' : '0 18px 50px rgba(40,60,50,0.18), inset 0 1px 0 rgba(255,255,255,0.7)',
+      padding: 15, color: t.text,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <TokenGlyph color={t.accent} size={16} />
+          <span style={{ font: `600 13px ${t.ui}`, color: t.text, letterSpacing: '.01em' }}>Tokenscope</span>
+        </div>
+        <Segmented value={period} theme={t} onSelect={setPeriod} />
+      </div>
+      <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 10 }}>
+        <div>
+          <div style={{ font: `500 10px ${t.ui}`, color: t.dim, letterSpacing: '.04em', textTransform: 'uppercase' }}>Total tokens</div>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 3 }}>
+            <span style={{ font: `600 30px ${t.mono}`, color: t.text, letterSpacing: '-.01em' }}>{M.totalTokens.toFixed(2)}<span style={{ font: `500 15px ${t.mono}`, color: t.dim, marginLeft: 2 }}>M</span></span>
+            <Delta v={M.deltaTokens} theme={t} />
+          </div>
+        </div>
+        <div style={{ textAlign: 'right' }}>
+          <div style={{ font: `500 10px ${t.ui}`, color: t.dim }}>Est. cost</div>
+          <div style={{ font: `600 18px ${t.mono}`, color: t.accent, marginTop: 2 }}>${M.cost.toFixed(2)}</div>
+        </div>
+      </div>
+      <div style={{ display: 'flex', gap: 3, height: 7, borderRadius: 4, overflow: 'hidden', marginBottom: 5 }}>
+        <div style={{ width: `${TD.pct(M.inputTokens, M.totalTokens)}%`, background: t.accent }} />
+        <div style={{ flex: 1, background: t.accentSoft }} />
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', font: `500 10px ${t.mono}`, color: t.dim, marginBottom: 14 }}>
+        <span><span style={{ color: t.accent }}>●</span> Input {M.inputTokens.toFixed(2)}M</span>
+        <span><span style={{ color: t.accentSoft }}>●</span> Output {M.outputTokens.toFixed(2)}M</span>
+      </div>
+      <BarChart data={P.series} theme={t} height={84} />
+      <div style={{ height: 1, background: t.gridLine, margin: '14px 0 10px' }} />
+      <div style={{ font: `600 10px ${t.ui}`, color: t.dim, letterSpacing: '.05em', textTransform: 'uppercase', marginBottom: 4 }}>Tokens by model</div>
+      {models.map((m, i) => <ModelRow key={i} m={m} max={maxM} theme={t} total={M.totalTokens} />)}
+      <div style={{ height: 1, background: t.gridLine, margin: '10px 0 10px' }} />
+      <div style={{ font: `600 10px ${t.ui}`, color: t.dim, letterSpacing: '.05em', textTransform: 'uppercase', marginBottom: 8 }}>Cost by model</div>
+      <CostDonut models={models} theme={t} size={100} thickness={15} />
+      <div style={{ height: 1, background: t.gridLine, margin: '12px 0 12px' }} />
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+        <MiniStat label="Requests" value={TD.fmtInt(M.requests)} sub={`${M.sessions} sessions`} theme={t}>
+          <Sparkline values={P.reqTrend} theme={t} width={52} height={20} accent={t.accent} />
+        </MiniStat>
+        <MiniStat label="Cost trend" value={`$${M.cost.toFixed(2)}`} sub={trendSub} theme={t} accent={t.accent}>
+          <Sparkline values={P.costTrend} theme={t} width={52} height={20} accent={t.accent} />
+        </MiniStat>
+      </div>
+      {mcpList.length > 0 && (
+        <React.Fragment>
+          <div style={{ height: 1, background: t.gridLine, margin: '12px 0 10px' }} />
+          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 7 }}>
+            <span style={{ font: `600 10px ${t.ui}`, color: t.dim, letterSpacing: '.05em', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>MCP calls</span>
+            <span style={{ font: `500 10px ${t.mono}`, color: t.faint, whiteSpace: 'nowrap' }}><span style={{ color: t.text, fontWeight: 600 }}>{TD.fmtInt(M.mcpCalls)}</span> · {M.servers} servers</span>
+          </div>
+          <BarList items={mcpList} theme={t} accent={t.accent} />
+        </React.Fragment>
+      )}
+      {skillList.length > 0 && (
+        <React.Fragment>
+          <div style={{ height: 1, background: t.gridLine, margin: '12px 0 10px' }} />
+          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 7 }}>
+            <span style={{ font: `600 10px ${t.ui}`, color: t.dim, letterSpacing: '.05em', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>Skill calls</span>
+            <span style={{ font: `500 10px ${t.mono}`, color: t.faint, whiteSpace: 'nowrap' }}><span style={{ color: t.text, fontWeight: 600 }}>{TD.fmtInt(M.skillCalls)}</span> · {M.skills} skills</span>
+          </div>
+          <BarList items={skillList} theme={t} accent={t.accentSoft} />
+        </React.Fragment>
+      )}
+      <div style={{ height: 1, background: t.gridLine, margin: '12px 0 10px' }} />
+      <div style={{ marginBottom: 9 }}>
+        <span style={{ font: `600 10px ${t.ui}`, color: t.dim, letterSpacing: '.05em', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>Daily activity</span>
+      </div>
+      <Heatmap days={TD.YEAR_DAILY} theme={t} accent={t.accent} />
+    </div>
+  );
+  return <Desk dark={dark} theme={t} caretLeft={232} caretColor={cardBg}>{card}</Desk>;
+}
+
+// =====================================================================
+// STAGE — dark + light side by side
+// =====================================================================
+function App() {
+  return (
+    <div className="stage">
+      <div className="col">
+        <div className="board-label">A · Native Pro · Dark</div>
+        <div className="board"><PanelA dark /></div>
+      </div>
+      <div className="col">
+        <div className="board-label">A · Native Pro · Light（系统自动切换）</div>
+        <div className="board"><PanelA dark={false} /></div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

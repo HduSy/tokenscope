@@ -1,0 +1,31 @@
+[package]
+name = "tokenscope"
+version = "0.1.0"
+description = "Claude CLI token usage dashboard"
+authors = ["you"]
+edition = "2021"
+
+[lib]
+name = "tokenscope_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-shell = "2"
+tauri-plugin-autostart = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "5"
+ureq = { version = "2", features = ["json"] }
+walkdir = "2"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
