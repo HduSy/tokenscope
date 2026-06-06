@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useId, useRef, useState } from "react";
 import {
   Theme, ModelStat, NamedCount, SeriesPoint, HeatDay,
   fmtInt, fmtMoney, fmtTokens, linePath, fmtHeatDate,
@@ -72,9 +72,19 @@ export function Sparkline({ values, theme, width = 80, height = 24, accent, stro
   { values: number[]; theme: Theme; width?: number; height?: number; accent?: string; strokeW?: number }) {
   const t = theme; accent = accent || t.accent;
   if (!values.length || values.every((v) => v === values[0])) values = values.length ? values : [0, 0];
-  const { d } = linePath(values, width, height, strokeW + 1);
+  const gid = useId().replace(/:/g, "");
+  const { d, px } = linePath(values, width, height, strokeW + 1);
+  // Apple-Stocks style: line + gradient area fading out below the curve.
+  const area = `${d} L ${px(values.length - 1).toFixed(1)} ${height} L ${px(0).toFixed(1)} ${height} Z`;
   return (
     <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ display: "block", overflow: "visible" }}>
+      <defs>
+        <linearGradient id={`sl${gid}`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={accent} stopOpacity="0.32" />
+          <stop offset="100%" stopColor={accent} stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      <path d={area} fill={`url(#sl${gid})`} stroke="none" />
       <path d={d} fill="none" stroke={accent} strokeWidth={strokeW} strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );

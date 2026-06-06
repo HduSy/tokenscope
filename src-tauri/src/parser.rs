@@ -4,13 +4,12 @@
 use crate::config::UserConfig;
 use crate::model::*;
 use crate::pricing::Pricing;
+use crate::store::{RawEvent, Store};
 use chrono::{DateTime, Datelike, Duration, Local, Timelike};
 use std::collections::{HashMap, HashSet};
-use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
-use walkdir::WalkDir;
 
-// One assistant API response, normalized.
+// One assistant API response, with config + pricing applied (derived per request
+// from a RawEvent, since user config / prices / time windows can all change).
 struct Event {
     ts: DateTime<Local>,
     session: String,
@@ -19,7 +18,7 @@ struct Event {
     cache: f64,  // raw tokens, cache creation + read
     output: f64, // raw tokens
     cost: f64,   // USD (differentiated by token type), 0 if unknown model
-    priced: bool, // whether LiteLLM had pricing for this model
+    priced: bool, // whether a price was found for this model
     mcp: Vec<String>,   // user-installed server names called in this msg
     skills: Vec<String>, // user-installed skill names called in this msg
 }
@@ -27,10 +26,6 @@ struct Event {
 // Top-5 models keep the green/slate scheme; everything beyond is uniform gray.
 const PALETTE: &[&str] = &["#1f9d63", "#34c27e", "#6ad0a0", "#a7e3c5", "#4b5a52"];
 const OVERFLOW_GRAY: &str = "#79817b";
-
-fn projects_dir() -> Option<PathBuf> {
-    Some(dirs::home_dir()?.join(".claude").join("projects"))
-}
 
 /// Strip a trailing "-YYYYMMDD" date suffix so dated releases merge into
 /// their base model (e.g. "claude-haiku-4-5-20251001" → "claude-haiku-4-5").
@@ -64,9 +59,20 @@ fn vendor_of(model: &str) -> &'static str {
 }
 
 pub fn build_dashboard() -> Dashboard {
+    // 1. Ingest: incrementally read only new log bytes, persist (full scan only
+    //    on first run; afterwards just the appended lines).
+    let mut store = Store::load();
+    store.ingest();
+    store.save();
+
+    // 2. Aggregate: apply current config + prices, slice by current time.
     let cfg = UserConfig::load();
     let pricing = Pricing::load();
-    let events = collect_events(&cfg, &pricing);
+    let events: Vec<Event> = store
+        .events
+        .iter()
+        .map(|r| compute_event(r, &cfg, &pricing))
+        .collect();
 
     let now = Local::now();
     let today = now.date_naive();
@@ -102,128 +108,42 @@ pub fn build_dashboard() -> Dashboard {
     }
 }
 
-fn collect_events(cfg: &UserConfig, pricing: &Pricing) -> Vec<Event> {
-    let mut events = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
-    let Some(root) = projects_dir() else {
-        return events;
-    };
-
-    for entry in WalkDir::new(&root)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map(|x| x == "jsonl").unwrap_or(false))
-    {
-        let Ok(file) = std::fs::File::open(entry.path()) else {
-            continue;
-        };
-        let reader = BufReader::new(file);
-        for line in reader.lines().map_while(Result::ok) {
-            if line.trim().is_empty() {
-                continue;
-            }
-            let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
-                continue;
-            };
-            if v.get("type").and_then(|t| t.as_str()) != Some("assistant") {
-                continue;
-            }
-            let msg = match v.get("message") {
-                Some(m) => m,
-                None => continue,
-            };
-
-            // dedupe by message.id (streaming/retries duplicate usage)
-            if let Some(id) = msg.get("id").and_then(|i| i.as_str()) {
-                if !seen.insert(id.to_string()) {
-                    continue;
-                }
-            }
-
-            let ts = v
-                .get("timestamp")
-                .and_then(|t| t.as_str())
-                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-                .map(|dt| dt.with_timezone(&Local));
-            let Some(ts) = ts else { continue };
-
-            let session = v
-                .get("sessionId")
-                .and_then(|s| s.as_str())
-                .unwrap_or("")
-                .to_string();
-            let raw_model = msg.get("model").and_then(|m| m.as_str()).unwrap_or("unknown");
-            if raw_model == "<synthetic>" {
-                continue;
-            }
-            // normalize for grouping; price lookup uses the raw model id.
-            let model = normalize_model(raw_model);
-
-            let usage = msg.get("usage");
-            let g = |k: &str| -> f64 {
-                usage
-                    .and_then(|u| u.get(k))
-                    .and_then(|x| x.as_f64())
-                    .unwrap_or(0.0)
-            };
-            let in_tok = g("input_tokens");
-            let out_tok = g("output_tokens");
-            let cc = g("cache_creation_input_tokens");
-            let cr = g("cache_read_input_tokens");
-
-            // split: uncached input · cache (creation+read) · output
-            let input = in_tok;
-            let cache = cc + cr;
-            let output = out_tok;
-            let cost_opt = pricing
-                .cost(raw_model, in_tok, out_tok, cc, cr)
-                .or_else(|| pricing.cost(&model, in_tok, out_tok, cc, cr));
-            let priced = cost_opt.is_some();
-            let cost = cost_opt.unwrap_or(0.0);
-
-            // classify tool_use blocks
-            let mut mcp = Vec::new();
-            let mut skills = Vec::new();
-            if let Some(content) = msg.get("content").and_then(|c| c.as_array()) {
-                for block in content {
-                    if block.get("type").and_then(|t| t.as_str()) != Some("tool_use") {
-                        continue;
-                    }
-                    let name = block.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                    if let Some(rest) = name.strip_prefix("mcp__") {
-                        let server = rest.split("__").next().unwrap_or("");
-                        if cfg.is_user_mcp(server) {
-                            mcp.push(server.to_string());
-                        }
-                    } else if name == "Skill" {
-                        let sk = block
-                            .get("input")
-                            .and_then(|i| i.get("skill"))
-                            .and_then(|s| s.as_str())
-                            .unwrap_or("");
-                        if !sk.is_empty() && cfg.is_user_skill(sk) {
-                            let key = sk.rsplit(':').next().unwrap_or(sk).to_string();
-                            skills.push(key);
-                        }
-                    }
-                }
-            }
-
-            events.push(Event {
-                ts,
-                session,
-                model,
-                input,
-                cache,
-                output,
-                cost,
-                priced,
-                mcp,
-                skills,
-            });
-        }
+/// Derive a computed Event from a stored RawEvent, applying the *current* user
+/// config (MCP/Skill whitelist) and prices. This is why these aren't baked into
+/// the store: installing an MCP or a price refresh applies retroactively.
+fn compute_event(r: &RawEvent, cfg: &UserConfig, pricing: &Pricing) -> Event {
+    let ts = DateTime::from_timestamp_millis(r.ts_ms)
+        .unwrap_or_default()
+        .with_timezone(&Local);
+    let model = normalize_model(&r.model);
+    // price lookup uses the raw (possibly dated) id, then the normalized one
+    let cost_opt = pricing
+        .cost(&r.model, r.in_tok, r.out_tok, r.cc, r.cr)
+        .or_else(|| pricing.cost(&model, r.in_tok, r.out_tok, r.cc, r.cr));
+    let mcp = r
+        .mcp
+        .iter()
+        .filter(|s| cfg.is_user_mcp(s))
+        .cloned()
+        .collect();
+    let skills = r
+        .skills
+        .iter()
+        .filter(|s| cfg.is_user_skill(s))
+        .map(|s| s.rsplit(':').next().unwrap_or(s).to_string())
+        .collect();
+    Event {
+        ts,
+        session: r.session.clone(),
+        model,
+        input: r.in_tok,
+        cache: r.cc + r.cr,
+        output: r.out_tok,
+        cost: cost_opt.unwrap_or(0.0),
+        priced: cost_opt.is_some(),
+        mcp,
+        skills,
     }
-    events
 }
 
 // ── aggregation helpers ────────────────────────────────────────────
