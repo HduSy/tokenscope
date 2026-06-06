@@ -10,16 +10,17 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "title": "Tokenscope",
-        "width": 396,
-        "height": 640,
-        "minHeight": 360,
-        "maxHeight": 900,
-        "resizable": true,
-        "decorations": true,
-        "transparent": false,
+        "width": 400,
+        "height": 660,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": true,
         "visible": false,
         "skipTaskbar": true
       }

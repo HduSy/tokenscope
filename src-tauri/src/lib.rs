@@ -2,23 +2,37 @@ mod config;
 mod model;
 mod parser;
 mod pricing;
+mod store;
 
 use model::Dashboard;
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Manager, WindowEvent,
 };
 use tauri_plugin_autostart::ManagerExt;
+use tauri_plugin_positioner::{Position, WindowExt};
 
-fn toggle_window(app: &tauri::AppHandle) {
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Show the panel as a popover anchored under the tray icon, and focus it.
+/// Always reset the scroll to the top so it doesn't reopen mid-scroll.
+fn show_popover(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
-        if w.is_visible().unwrap_or(false) {
-            let _ = w.hide();
-        } else {
-            let _ = w.show();
-            let _ = w.set_focus();
-        }
+        let _ = w.move_window(Position::TrayBottomCenter);
+        let _ = w.show();
+        let _ = w.set_focus();
+        let _ = w.eval(
+            "(function(){var e=document.querySelector('.om-scroll');if(e){e.scrollTop=0;}else{window.scrollTo(0,0);}})()",
+        );
     }
 }
 
@@ -42,14 +56,19 @@ fn fmt_tokens_m(m: f64) -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Tracks when the popover was last hidden, so a click on the tray icon
+    // while it's open (which first blurs/hides it) doesn't immediately reopen.
+    let last_hidden = Arc::new(AtomicI64::new(0));
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_positioner::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
         .invoke_handler(tauri::generate_handler![get_dashboard])
-        .setup(|app| {
+        .setup(move |app| {
             // Menu-bar–only app: no Dock icon, runs in the background.
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
@@ -57,47 +76,71 @@ pub fn run() {
             // Launch at login (idempotent — safe to call every start).
             let _ = app.autolaunch().enable();
 
-            // Closing the window just hides it; the app keeps running in the tray.
+            // Popover behaviour: clicking outside (focus lost) hides it.
             if let Some(win) = app.get_webview_window("main") {
                 let w = win.clone();
-                win.on_window_event(move |e| {
-                    if let WindowEvent::CloseRequested { api, .. } = e {
+                let lh = last_hidden.clone();
+                win.on_window_event(move |e| match e {
+                    WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
+                        lh.store(now_ms(), Ordering::Relaxed);
                         let _ = w.hide();
                     }
+                    WindowEvent::Focused(false) => {
+                        lh.store(now_ms(), Ordering::Relaxed);
+                        let _ = w.hide();
+                    }
+                    _ => {}
                 });
             }
 
-            // Build the menu-bar tray with today's token count as the title.
+            // Build the menu-bar tray: app glyph (template icon) + today's tokens.
             let dash = parser::build_dashboard();
-            let label = format!("⬡ {}", fmt_tokens_m(dash.today_tokens));
+            let label = fmt_tokens_m(dash.today_tokens);
 
             let open_i = MenuItem::with_id(app, "open", "Open Tokenscope", true, None::<&str>)?;
             let refresh_i = MenuItem::with_id(app, "refresh", "Refresh", true, None::<&str>)?;
             let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&open_i, &refresh_i, &quit_i])?;
 
+            let lh_tray = last_hidden.clone();
             let _tray = TrayIconBuilder::with_id("main")
+                .icon(tauri::include_image!("icons/tray-icon.png"))
+                .icon_as_template(false)
                 .title(&label)
                 .tooltip("Tokenscope · today's token usage")
                 .menu(&menu)
                 .show_menu_on_left_click(false) // left = toggle panel, right = menu
-                .on_tray_icon_event(|tray, event| {
+                .on_tray_icon_event(move |tray, event| {
+                    let app = tray.app_handle();
+                    tauri_plugin_positioner::on_tray_event(app, &event);
                     if let TrayIconEvent::Click {
                         button: MouseButton::Left,
                         button_state: MouseButtonState::Up,
                         ..
                     } = event
                     {
-                        toggle_window(tray.app_handle());
+                        let visible = app
+                            .get_webview_window("main")
+                            .and_then(|w| w.is_visible().ok())
+                            .unwrap_or(false);
+                        // if it was just hidden by the blur from this same click, leave it closed
+                        let just_hidden = now_ms() - lh_tray.load(Ordering::Relaxed) < 250;
+                        if visible {
+                            if let Some(w) = app.get_webview_window("main") {
+                                let _ = w.hide();
+                            }
+                        } else if !just_hidden {
+                            show_popover(app);
+                        }
                     }
                 })
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "open" => toggle_window(app),
+                    "open" => show_popover(app),
                     "refresh" => {
                         if let Some(tray) = app.tray_by_id("main") {
                             let d = parser::build_dashboard();
-                            let _ = tray.set_title(Some(format!("⬡ {}", fmt_tokens_m(d.today_tokens))));
+                            let _ = tray.set_title(Some(fmt_tokens_m(d.today_tokens)));
                         }
                     }
                     "quit" => app.exit(0),

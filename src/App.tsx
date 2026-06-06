@@ -119,12 +119,13 @@ function Panel({ dash, dark, onToggleTheme }: { dash: Dashboard; dark: boolean; 
   return (
     <div style={{
       width: "100%", height: "100vh", overflow: "hidden", boxSizing: "border-box",
-      background: dark ? "#1f2226" : "#ffffff",
+      background: "transparent", padding: 0,
       fontFamily: t.ui,
     }}>
       <div className="om-scroll" style={{
         width: "100%", height: "100%", overflowY: "auto",
-        background: dark ? "#1f2226" : "#ffffff",
+        borderRadius: 12, background: dark ? "#1f2226" : "#ffffff",
+        border: `1px solid ${dark ? "rgba(255,255,255,0.10)" : "rgba(0,0,0,0.08)"}`,
         padding: 0, color: t.text,
       }}>
         {/* sticky header — stays put while the body scrolls */}
@@ -255,9 +256,9 @@ export default function App() {
     fetchDashboard().then(setDash).catch((e) => setErr(String(e)));
   }, []);
 
-  // keep the window/body backdrop in sync with the chosen theme
+  // window is transparent; the rounded card paints its own background
   useEffect(() => {
-    document.body.style.background = dark ? "#1f2226" : "#ffffff";
+    document.body.style.background = "transparent";
   }, [dark]);
 
   const t = TH[dark ? "dark" : "light"];
@@ -265,8 +266,13 @@ export default function App() {
     return <div style={{ padding: 20, font: `500 12px ${t.mono}`, color: "#e0795f" }}>加载失败：{err}</div>;
   }
   if (!dash) {
-    return <div style={{ padding: 20, height: "100vh", display: "flex", alignItems: "center", justifyContent: "center",
-      background: dark ? "#1f2226" : "#ffffff", font: `500 12px ${t.mono}`, color: t.dim }}>Loading…</div>;
+    return (
+      <div style={{ height: "100vh", padding: 10, boxSizing: "border-box", background: "transparent" }}>
+        <div style={{ height: "100%", borderRadius: 14, background: dark ? "#1f2226" : "#ffffff",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          font: `500 12px ${t.mono}`, color: t.dim }}>Loading…</div>
+      </div>
+    );
   }
   return <Panel dash={dash} dark={dark} onToggleTheme={toggleTheme} />;
 }
