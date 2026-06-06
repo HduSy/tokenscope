@@ -34,6 +34,10 @@ const OVERFLOW_GRAY: &str = "#79817b";
 
 /// Strip a trailing "-YYYYMMDD" date suffix so dated releases merge into
 /// their base model (e.g. "claude-haiku-4-5-20251001" → "claude-haiku-4-5").
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
 fn normalize_model(name: &str) -> String {
     if let Some(idx) = name.rfind('-') {
         let suffix = &name[idx + 1..];
@@ -295,6 +299,7 @@ fn report_day(events: &[Event], now: DateTime<Local>) -> PeriodReport {
             } else {
                 String::new()
             },
+            full: format!("{:02}:00", h),
             input: buckets[h].0,
             cache: buckets[h].1,
             output: buckets[h].2,
@@ -351,8 +356,9 @@ fn report_range(events: &[Event], now: DateTime<Local>, days: i64, kind: &str) -
     let series = (0..days as usize)
         .map(|i| {
             let date = start + Duration::days(i as i64);
+            let wd = weekday[date.weekday().num_days_from_monday() as usize];
             let label = if kind == "Week" {
-                weekday[date.weekday().num_days_from_monday() as usize].to_string()
+                wd.to_string()
             } else {
                 let dn = date.day();
                 if i == 0 || dn % 5 == 0 {
@@ -363,6 +369,7 @@ fn report_range(events: &[Event], now: DateTime<Local>, days: i64, kind: &str) -
             };
             SeriesPoint {
                 label,
+                full: format!("{} {} {}", wd, MONTHS[(date.month() - 1) as usize], date.day()),
                 input: buckets[i].0,
                 cache: buckets[i].1,
                 output: buckets[i].2,
@@ -435,6 +442,7 @@ fn report_month(events: &[Event], now: DateTime<Local>) -> PeriodReport {
             };
             SeriesPoint {
                 label,
+                full: format!("{} {}", MONTHS[(m - 1) as usize], dn),
                 input: buckets[i].0,
                 cache: buckets[i].1,
                 output: buckets[i].2,

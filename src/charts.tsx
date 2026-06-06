@@ -42,6 +42,13 @@ export function BarChart({ data, theme, height = 96, accent, accentSoft, radius 
   const n = data.length;
   const gapPct = Math.max(0.8, Math.min(6, 32 / n));
   const effRadius = n > 16 ? 1 : radius;
+  const [hi, setHi] = useState<SeriesPoint | null>(null);
+  const [tip, setTip] = useState({ x: 0, y: 0 });
+  // position:fixed so the tooltip renders above the scrolling card (not clipped)
+  const onBar = (d: SeriesPoint, e: React.MouseEvent) => {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    setHi(d); setTip({ x: r.left + r.width / 2, y: r.top });
+  };
   return (
     <div>
       <div style={{ position: "relative", height, display: "flex", alignItems: "flex-end", gap: `${gapPct}%` }}>
@@ -51,8 +58,13 @@ export function BarChart({ data, theme, height = 96, accent, accentSoft, radius 
         {data.map((d, i) => {
           // stacked top→bottom: output · input(+cache)
           const hO = (d.output / max) * height, hI = ((d.input + d.cache) / max) * height;
+          const empty = d.input + d.cache + d.output <= 0;
+          const on = hi === d;
           return (
-            <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "flex-end", position: "relative", zIndex: 1 }}>
+            <div key={i}
+              onMouseEnter={empty ? undefined : (e) => onBar(d, e)}
+              onMouseLeave={empty ? undefined : () => setHi(null)}
+              style={{ flex: 1, alignSelf: "stretch", display: "flex", flexDirection: "column", justifyContent: "flex-end", position: "relative", zIndex: 1, cursor: "default", opacity: hi && !on && !empty ? 0.55 : 1, transition: "opacity .12s" }}>
               <div style={{ height: hO, background: accentSoft, borderRadius: `${effRadius}px ${effRadius}px 0 0` }} />
               <div style={{ height: hI, background: accent }} />
             </div>
@@ -64,6 +76,20 @@ export function BarChart({ data, theme, height = 96, accent, accentSoft, radius 
           <div key={i} style={{ flex: 1, textAlign: "center", font: `500 9px ${t.mono}`, color: t.dim, letterSpacing: ".03em" }}>{d.label}</div>
         ))}
       </div>
+      {hi && (
+        <div style={{
+          position: "fixed",
+          left: Math.min(Math.max(tip.x, 96), (typeof window !== "undefined" ? window.innerWidth : 372) - 96),
+          top: tip.y - 8, transform: "translate(-50%,-100%)",
+          background: t.tip, color: "#fff", borderRadius: 6, padding: "5px 8px",
+          font: `500 10px ${t.mono}`, whiteSpace: "nowrap", pointerEvents: "none", zIndex: 9999,
+          boxShadow: "0 4px 14px rgba(0,0,0,0.35)" }}>
+          <span style={{ color: accent, fontWeight: 600 }}>
+            {(() => { const tot = hi.input + hi.cache + hi.output; return tot === 0 ? "No tokens" : fmtTokens(tot) + " tokens"; })()}
+          </span>
+          <span style={{ opacity: 0.7 }}> · {hi.full}</span>
+        </div>
+      )}
     </div>
   );
 }
