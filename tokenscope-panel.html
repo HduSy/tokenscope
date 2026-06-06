@@ -325,7 +325,10 @@ function BarChart({ data, theme, height = 96, accent, accentSoft, radius = 3 }) 
   const [tip, setTip] = useState({ x: 0, y: 0 });
   const onBar = (d, e) => {
     const r = e.currentTarget.getBoundingClientRect();
-    setHi(d); setTip({ x: r.left + r.width / 2, y: r.top });
+    // anchor to the visible bar top (baseline − bar height), not the full-height
+    // column top, so short bars don't push the tooltip up over the legend above
+    const barPx = ((d.input + d.cache + d.output) / max) * height;
+    setHi(d); setTip({ x: r.left + r.width / 2, y: r.bottom - barPx });
   };
   return (
     <div>
