@@ -12,19 +12,26 @@ import {
 // Count up to `target`. Restarts from 0 whenever `resetKey` changes (popover
 // open / period switch); on a live value change it eases from the current
 // value to the new one instead of snapping back to 0.
-function useCountUp(target: number, resetKey: string, duration = 850): number {
+function useCountUp(target: number, resetKey: string, active: boolean, duration = 850): number {
   const [val, setVal] = useState(0);
   const valRef = useRef(0);
   const keyRef = useRef<string | null>(null);
   const rafRef = useRef(0);
-  useEffect(() => {
+  // useLayoutEffect so the reset-to-0 is committed *before* the browser paints
+  // (otherwise the old/final value flashes for a frame before counting up).
+  useLayoutEffect(() => {
     cancelAnimationFrame(rafRef.current);
+    const set = (v: number) => { valRef.current = v; setVal(v); };
+    // while the popover is hidden, hold at 0 so the next open starts clean
+    if (!active) { keyRef.current = null; set(0); return; }
     const reset = keyRef.current !== resetKey;
     keyRef.current = resetKey;
-    const from = reset ? 0 : valRef.current;
+    // open / period switch → start from 0 (paint it now); live update → ease
+    // from the current value to the new one.
+    let from = valRef.current;
+    if (reset) { from = 0; set(0); }
     const start = performance.now();
     const ease = (t: number) => 1 - Math.pow(1 - t, 3); // easeOutCubic
-    const set = (v: number) => { valRef.current = v; setVal(v); };
     const tick = (now: number) => {
       const p = Math.min(1, (now - start) / duration);
       set(from + (target - from) * ease(p));
@@ -32,7 +39,7 @@ function useCountUp(target: number, resetKey: string, duration = 850): number {
     };
     rafRef.current = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafRef.current);
-  }, [resetKey, target, duration]);
+  }, [resetKey, target, active, duration]);
   return val;
 }
 
@@ -131,13 +138,14 @@ function ThemeToggle({ dark, theme, onToggle }: { dark: boolean; theme: Theme; o
   );
 }
 
-function Panel({ dash, dark, onToggleTheme, openGen }: { dash: Dashboard; dark: boolean; onToggleTheme: () => void; openGen: number }) {
+function Panel({ dash, dark, onToggleTheme, openGen, active }: { dash: Dashboard; dark: boolean; onToggleTheme: () => void; openGen: number; active: boolean }) {
   const t = TH[dark ? "dark" : "light"];
   const [period, setPeriod] = useState<"Day" | "Week" | "Month">("Week");
   const P: PeriodReport = period === "Day" ? dash.day : period === "Month" ? dash.month : dash.week;
   const M = P.metrics;
-  // animated Total tokens: counts up from 0 on each open / period switch
-  const animTotal = useCountUp(M.totalTokens, `${period}:${openGen}`);
+  // animated Total tokens: counts up from 0 on each open / period switch;
+  // held at 0 while the popover is hidden so it never flashes the final value.
+  const animTotal = useCountUp(M.totalTokens, `${period}:${openGen}`, active);
   const models = P.models;
   // Hide noise: 0% token-share rows, and $0 entries in the cost donut.
   const tokenModels = models.filter((m) => pct(m.tokens, M.totalTokens || 1) > 0);
@@ -271,6 +279,7 @@ export default function App() {
   const [dash, setDash] = useState<Dashboard | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [openGen, setOpenGen] = useState(0);
+  const [focused, setFocused] = useState(true); // browser preview: always "focused"
   const [theme, setTheme] = useState<"dark" | "light">(() => {
     const saved = typeof localStorage !== "undefined" ? localStorage.getItem("tokenscope-theme") : null;
     if (saved === "dark" || saved === "light") return saved;
@@ -297,6 +306,7 @@ export default function App() {
     // refetch the instant the popover gains focus (i.e. is opened)
     getCurrentWindow()
       .onFocusChanged(({ payload: focused }) => {
+        setFocused(focused);
         if (focused) {
           setOpenGen((g) => g + 1); // re-run the count-up on each open
           fetchDashboard().then(setDash).catch(() => {});
@@ -324,5 +334,5 @@ export default function App() {
       </div>
     );
   }
-  return <Panel dash={dash} dark={dark} onToggleTheme={toggleTheme} openGen={openGen} />;
+  return <Panel dash={dash} dark={dark} onToggleTheme={toggleTheme} openGen={openGen} active={focused} />;
 }
