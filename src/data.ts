@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
-export interface SeriesPoint { label: string; input: number; cache: number; output: number }
+export interface SeriesPoint { label: string; full: string; input: number; cache: number; output: number }
 export interface ModelStat { name: string; vendor: string; tokens: number; cost: number; color: string; priced: boolean }
 export interface NamedCount { name: string; count: number }
 export interface Metrics {

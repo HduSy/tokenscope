@@ -3,10 +3,11 @@ use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SeriesPoint {
-    pub label: String,
-    pub input: f64,  // M tokens (uncached new input)
-    pub cache: f64,  // M tokens (cache creation + read)
-    pub output: f64, // M tokens
+    pub label: String, // sparse axis label (many empty)
+    pub full: String,  // complete label for the hover tooltip (hour / date)
+    pub input: f64,    // M tokens (uncached new input)
+    pub cache: f64,    // M tokens (cache creation + read)
+    pub output: f64,   // M tokens
 }
 
 #[derive(Debug, Clone, Serialize)]
