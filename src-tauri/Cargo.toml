@@ -1,6 +1,6 @@
 [package]
 name = "tokenscope"
-version = "0.1.1"
+version = "0.1.2"
 description = "Claude CLI token usage dashboard"
 authors = ["you"]
 edition = "2021"
