@@ -129,6 +129,36 @@ fix. Newest first. Useful as a reference for similar issues.
 
 ---
 
+## UI / charts
+
+### 11. Bar-chart tooltip overlapped the legend above it
+
+- **Symptom**: Hovering a token bar showed its tooltip floating up over the
+  Total-tokens "Input … cached" legend, even for short bars.
+- **Cause**: To make short bars easy to hover, the hit area was stretched to the
+  full column height (`alignSelf: stretch`). The tooltip then anchored to the
+  column's `top` — i.e. the top of the chart, right under the legend — so every
+  bar's tooltip appeared at the same high spot.
+- **Fix** (`charts.tsx` + `tokenscope-panel.html`): anchor the tooltip to the
+  *visible bar top* (`r.bottom − barPx`, baseline minus bar height) instead of
+  the column top, so short bars get a low tooltip clear of the legend.
+
+### 12. Mockup tooltip drifted to the panel centre (backdrop-filter)
+
+- **Symptom**: In `tokenscope-panel.html` only, the heatmap/bar tooltips
+  appeared near the middle of the panel instead of next to the hovered cell/bar.
+- **Cause**: The design board's card uses `backdrop-filter: blur(...)`. Like
+  `transform`/`filter`, `backdrop-filter` establishes a **containing block for
+  `position: fixed`** descendants — so the fixed tooltip anchored to the card,
+  not the viewport, and its viewport coordinates landed mid-panel. The real app
+  was unaffected (its card is solid, no backdrop-filter, and it needs `fixed` to
+  escape the scrolling card).
+- **Fix** (`tokenscope-panel.html` only): position the tooltips `absolute`
+  relative to each chart's own wrapper (coords offset from the wrapper rect).
+  The mockup never scrolls, so it doesn't need `fixed`.
+
+---
+
 ## Notes
 
 - "Month" was also changed from a rolling 30-day window to the **current
