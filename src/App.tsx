@@ -45,10 +45,11 @@ function useCountUp(target: number, resetKey: string, active: boolean, duration 
 
 function Delta({ v, theme }: { v: number; theme: Theme }) {
   const up = v >= 0;
-  const col = up ? theme.accent : "#e0795f";
+  // Usage/cost going up is "bad" → red; going down is "good" → green.
+  const col = up ? "#e0795f" : theme.accent;
   return (
     <span style={{ font: `600 10px ${theme.mono}`, color: col, display: "inline-flex", alignItems: "center", gap: 2,
-      padding: "1.5px 5px", borderRadius: 5, background: up ? "rgba(39,176,110,0.14)" : "rgba(224,121,95,0.16)" }}>
+      padding: "1.5px 5px", borderRadius: 5, background: up ? "rgba(224,121,95,0.16)" : "rgba(39,176,110,0.14)" }}>
       {up ? "▲" : "▼"}{Math.abs(Math.round(v))}%
     </span>
   );
@@ -153,7 +154,7 @@ function Panel({ dash, dark, onToggleTheme, openGen, active }: { dash: Dashboard
   // models that were used but have no LiteLLM pricing (cost unknown, not $0)
   const unpricedModels = models.filter((m) => !m.priced && m.tokens > 0);
   const maxM = Math.max(...tokenModels.map((m) => m.tokens), 1e-9);
-  const trendSub = { Day: "today 24h", Week: "last 7 days", Month: "last 30 days" }[period];
+  const trendSub = { Day: "today 24h", Week: "last 7 days", Month: "this month" }[period];
 
   return (
     <div style={{

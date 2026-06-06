@@ -86,7 +86,7 @@ pub fn build_dashboard() -> Dashboard {
 
     let mut day = report_day(&events, now);
     let mut week = report_range(&events, now, 7, "Week");
-    let mut month = report_range(&events, now, 30, "Month");
+    let mut month = report_month(&events, now);
     let heatmap = build_heatmap(&events, today);
 
     // "servers"/"skills" = how many the user has *installed* (global, constant
@@ -250,11 +250,13 @@ impl Agg {
     }
 }
 
+/// Percentage change of `cur` vs `prev`, e.g. +20.0 for a 20% increase,
+/// rounded to 2 decimals. Returns 0 when there's no baseline to compare.
 fn pct_delta(cur: f64, prev: f64) -> f64 {
     if prev <= 0.0 {
         return 0.0;
     }
-    ((cur - prev) / prev * 100.0).round() / 100.0
+    ((cur - prev) / prev * 10000.0).round() / 100.0
 }
 
 // ── Day report: today, 24 hourly buckets ───────────────────────────
@@ -354,6 +356,78 @@ fn report_range(events: &[Event], now: DateTime<Local>, days: i64, kind: &str) -
                 } else {
                     String::new()
                 }
+            };
+            SeriesPoint {
+                label,
+                input: buckets[i].0,
+                cache: buckets[i].1,
+                output: buckets[i].2,
+            }
+        })
+        .collect();
+
+    PeriodReport {
+        metrics: agg.metrics(
+            pct_delta(
+                agg.input + agg.cache + agg.output,
+                prev.input + prev.cache + prev.output,
+            ),
+            pct_delta(agg.cost, prev.cost),
+        ),
+        series,
+        models: agg.models(),
+        mcp: Agg::named(&agg.mcp_counts),
+        skills: Agg::named(&agg.skill_counts),
+        req_trend: req_b,
+        cost_trend: cost_b,
+    }
+}
+
+// ── Month report: current calendar month vs previous calendar month ──
+fn report_month(events: &[Event], now: DateTime<Local>) -> PeriodReport {
+    use chrono::NaiveDate;
+    let today = now.date_naive();
+    let (y, m) = (today.year(), today.month());
+    let cur_first = NaiveDate::from_ymd_opt(y, m, 1).unwrap();
+    let next_first = if m == 12 {
+        NaiveDate::from_ymd_opt(y + 1, 1, 1).unwrap()
+    } else {
+        NaiveDate::from_ymd_opt(y, m + 1, 1).unwrap()
+    };
+    let (py, pm) = if m == 1 { (y - 1, 12) } else { (y, m - 1) };
+    let prev_first = NaiveDate::from_ymd_opt(py, pm, 1).unwrap();
+    let days_in_month = (next_first - cur_first).num_days() as usize;
+
+    let mut agg = Agg::default();
+    let mut prev = Agg::default();
+    let mut buckets = vec![(0.0f64, 0.0f64, 0.0f64); days_in_month];
+    let mut req_b = vec![0.0f64; days_in_month];
+    let mut cost_b = vec![0.0f64; days_in_month];
+
+    for e in events {
+        let d = e.ts.date_naive();
+        if d >= cur_first && d < next_first {
+            agg.add(e);
+            let idx = (d - cur_first).num_days() as usize;
+            if idx < buckets.len() {
+                buckets[idx].0 += e.input / 1e6;
+                buckets[idx].1 += e.cache / 1e6;
+                buckets[idx].2 += e.output / 1e6;
+                req_b[idx] += 1.0;
+                cost_b[idx] += e.cost;
+            }
+        } else if d >= prev_first && d < cur_first {
+            prev.add(e);
+        }
+    }
+
+    let series = (0..days_in_month)
+        .map(|i| {
+            let dn = (i + 1) as u32;
+            let label = if i == 0 || dn % 5 == 0 {
+                dn.to_string()
+            } else {
+                String::new()
             };
             SeriesPoint {
                 label,
