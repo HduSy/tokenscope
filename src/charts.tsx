@@ -44,10 +44,13 @@ export function BarChart({ data, theme, height = 96, accent, accentSoft, radius 
   const effRadius = n > 16 ? 1 : radius;
   const [hi, setHi] = useState<SeriesPoint | null>(null);
   const [tip, setTip] = useState({ x: 0, y: 0 });
-  // position:fixed so the tooltip renders above the scrolling card (not clipped)
+  // position:fixed so the tooltip renders above the scrolling card (not clipped).
+  // Anchor to the *visible bar top* (baseline − bar height), not the full-height
+  // column top, so short bars don't push the tooltip up over the legend above.
   const onBar = (d: SeriesPoint, e: React.MouseEvent) => {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    setHi(d); setTip({ x: r.left + r.width / 2, y: r.top });
+    const barPx = ((d.input + d.cache + d.output) / max) * height;
+    setHi(d); setTip({ x: r.left + r.width / 2, y: r.bottom - barPx });
   };
   return (
     <div>
