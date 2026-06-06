@@ -157,6 +157,16 @@ fix. Newest first. Useful as a reference for similar issues.
   relative to each chart's own wrapper (coords offset from the wrapper rect).
   The mockup never scrolls, so it doesn't need `fixed`.
 
+### 13. Total-tokens bar showed slivers when usage was zero
+
+- **Symptom**: With no usage in the period (Total = 0.00M), the input/output
+  split bar still showed a small coloured sliver instead of being empty.
+- **Cause**: Each segment had `minWidth: 4`, so even a `flexGrow` of `1e-6`
+  rendered a 4px block — two slivers when everything was zero.
+- **Fix** (`App.tsx` + `tokenscope-panel.html`): give the bar a track background
+  and only render the coloured segments when `totalTokens > 0`; otherwise the
+  bar is just the empty track.
+
 ---
 
 ## Notes

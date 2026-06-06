@@ -639,9 +639,11 @@ function Panel({ dark = true }) {
         </div>
       </div>
       {/* input(+cache) / output split — 2-colour, no gap; cache folds into In */}
-      <div style={{ display: 'flex', gap: 0, height: 7, borderRadius: 4, overflow: 'hidden', marginBottom: 5 }}>
-        <div style={{ flexGrow: Math.max(M.inputTokens + M.cacheTokens, 1e-6), flexBasis: 0, minWidth: 4, background: td.accent }} />
-        <div style={{ flexGrow: Math.max(M.outputTokens, 1e-6), flexBasis: 0, minWidth: 4, background: td.accentSoft }} />
+      <div style={{ display: 'flex', gap: 0, height: 7, borderRadius: 4, overflow: 'hidden', marginBottom: 5, background: td.gridLine }}>
+        {M.totalTokens > 0 && <React.Fragment>
+          <div style={{ flexGrow: Math.max(M.inputTokens + M.cacheTokens, 1e-6), flexBasis: 0, minWidth: 4, background: td.accent }} />
+          <div style={{ flexGrow: Math.max(M.outputTokens, 1e-6), flexBasis: 0, minWidth: 4, background: td.accentSoft }} />
+        </React.Fragment>}
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, font: `500 10px ${td.mono}`, color: td.dim, marginBottom: 14, whiteSpace: 'nowrap' }}>
         <span><span style={{ color: td.accent }}>●</span> Input {(M.inputTokens + M.cacheTokens).toFixed(2)}M</span>
