@@ -7,6 +7,11 @@ use crate::pricing::Pricing;
 use crate::store::{RawEvent, Store};
 use chrono::{DateTime, Datelike, Duration, Local, Timelike};
 use std::collections::{HashMap, HashSet};
+use std::sync::Mutex;
+
+// Serializes dashboard builds so the background refresh thread and the command
+// handler never touch the incremental cache files concurrently.
+static BUILD_LOCK: Mutex<()> = Mutex::new(());
 
 // One assistant API response, with config + pricing applied (derived per request
 // from a RawEvent, since user config / prices / time windows can all change).
@@ -59,6 +64,8 @@ fn vendor_of(model: &str) -> &'static str {
 }
 
 pub fn build_dashboard() -> Dashboard {
+    let _guard = BUILD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
     // 1. Ingest: incrementally read only new log bytes, persist (full scan only
     //    on first run; afterwards just the appended lines).
     let mut store = Store::load();

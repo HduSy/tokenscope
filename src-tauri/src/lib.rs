@@ -11,8 +11,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, WindowEvent,
+    Emitter, Manager, WindowEvent,
 };
+use std::time::Duration;
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_positioner::{Position, WindowExt};
 
@@ -21,6 +22,16 @@ fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// Rebuild the dashboard (incremental), update the tray's token count, and push
+/// the fresh data to the UI so an open popover updates live.
+fn refresh(app: &tauri::AppHandle) {
+    let dash = parser::build_dashboard();
+    if let Some(tray) = app.tray_by_id("main") {
+        let _ = tray.set_title(Some(fmt_tokens_m(dash.today_tokens)));
+    }
+    let _ = app.emit("dashboard-updated", &dash);
 }
 
 /// Show the panel as a popover anchored under the tray icon, and focus it.
@@ -137,16 +148,19 @@ pub fn run() {
                 })
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "open" => show_popover(app),
-                    "refresh" => {
-                        if let Some(tray) = app.tray_by_id("main") {
-                            let d = parser::build_dashboard();
-                            let _ = tray.set_title(Some(fmt_tokens_m(d.today_tokens)));
-                        }
-                    }
+                    "refresh" => refresh(app),
                     "quit" => app.exit(0),
                     _ => {}
                 })
                 .build(app)?;
+
+            // Background refresh: keep the tray's token count current and push
+            // live updates to an open popover. Cheap thanks to incremental ingest.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(Duration::from_secs(30));
+                refresh(&handle);
+            });
 
             Ok(())
         })
