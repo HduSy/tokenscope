@@ -1,4 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   Dashboard, PeriodReport, ModelStat, Theme, TH,
   fetchDashboard, fmtInt, fmtTokens, pct,
@@ -253,7 +255,22 @@ export default function App() {
     });
 
   useEffect(() => {
+    // initial load (shows the Loading state only until the first data arrives)
     fetchDashboard().then(setDash).catch((e) => setErr(String(e)));
+
+    const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+    if (!inTauri) return;
+    const unlisten: Array<() => void> = [];
+    // live updates pushed from the background refresh thread — setDash swaps the
+    // data in place (no Loading), so values update without any flicker.
+    listen<Dashboard>("dashboard-updated", (e) => setDash(e.payload)).then((u) => unlisten.push(u));
+    // refetch the instant the popover gains focus (i.e. is opened)
+    getCurrentWindow()
+      .onFocusChanged(({ payload: focused }) => {
+        if (focused) fetchDashboard().then(setDash).catch(() => {});
+      })
+      .then((u) => unlisten.push(u));
+    return () => unlisten.forEach((u) => u());
   }, []);
 
   // window is transparent; the rounded card paints its own background
