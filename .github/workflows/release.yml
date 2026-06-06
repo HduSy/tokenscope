@@ -70,6 +70,58 @@ jobs:
 
             > Unsigned build — on first launch, right-click the app → **Open**
             > (or install via `brew` once a cask is published).
-          releaseDraft: true
+          # Publish immediately (not a draft): the asset's public download URL
+          # must be live for the Homebrew Cask step below to fetch it and for
+          # `brew install` to work.
+          releaseDraft: false
           prerelease: false
           args: --target universal-apple-darwin
+
+      - name: Update Homebrew Cask
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          DMG_NAME="Tokenscope_${VERSION}_universal.dmg"
+          DOWNLOAD_URL="https://github.com/HduSy/tokenscope/releases/download/${GITHUB_REF_NAME}/${DMG_NAME}"
+
+          # Wait for the release asset to be available, then compute sha256.
+          # -f makes curl fail (non-zero) on a 404 so we keep retrying instead
+          # of hashing GitHub's error page and writing a bogus checksum.
+          SHA256=""
+          for i in $(seq 1 10); do
+            if curl -fsSL "$DOWNLOAD_URL" -o /tmp/tokenscope.dmg; then
+              SHA256=$(shasum -a 256 /tmp/tokenscope.dmg | cut -d' ' -f1)
+              break
+            fi
+            echo "Retry $i: asset not ready yet..."
+            sleep 10
+          done
+          if [ -z "$SHA256" ]; then
+            echo "::error::Release asset $DMG_NAME never became available"; exit 1
+          fi
+
+          # Clone the tap repo and update the cask
+          git clone https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/HduSy/homebrew-tokenscope.git /tmp/homebrew-tap
+          cat > /tmp/homebrew-tap/Casks/tokenscope.rb <<CASK
+          cask "tokenscope" do
+            version "${VERSION}"
+            sha256 "${SHA256}"
+
+            url "${DOWNLOAD_URL}"
+            name "Tokenscope"
+            desc "macOS menu-bar dashboard for Claude CLI token usage"
+            homepage "https://github.com/HduSy/tokenscope"
+
+            depends_on macos: ">= :catalina"
+
+            app "Tokenscope.app"
+          end
+          CASK
+
+          cd /tmp/homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Casks/tokenscope.rb
+          git diff --cached --quiet || git commit -m "Update cask to v${VERSION}"
+          git push
