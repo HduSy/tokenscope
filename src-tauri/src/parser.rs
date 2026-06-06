@@ -177,15 +177,19 @@ impl Agg {
         self.cache += e.cache;
         self.output += e.output;
         self.cost += e.cost;
-        self.requests += 1;
         if !e.session.is_empty() {
             self.sessions.insert(e.session.clone());
         }
-        // model totals keep all token types so shares sum to Total tokens
-        *self.model_tok.entry(e.model.clone()).or_default() += e.input + e.cache + e.output;
-        *self.model_cost.entry(e.model.clone()).or_default() += e.cost;
-        // a model is "priced" if any of its messages had a known price
-        *self.model_priced.entry(e.model.clone()).or_default() |= e.priced;
+        // Slash-command skill events carry no model (empty) — they're not LLM
+        // requests, so they must not inflate request counts or the model split.
+        if !e.model.is_empty() {
+            self.requests += 1;
+            // model totals keep all token types so shares sum to Total tokens
+            *self.model_tok.entry(e.model.clone()).or_default() += e.input + e.cache + e.output;
+            *self.model_cost.entry(e.model.clone()).or_default() += e.cost;
+            // a model is "priced" if any of its messages had a known price
+            *self.model_priced.entry(e.model.clone()).or_default() |= e.priced;
+        }
         for s in &e.mcp {
             self.mcp_calls += 1;
             *self.mcp_counts.entry(s.clone()).or_default() += 1;

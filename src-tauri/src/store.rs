@@ -9,7 +9,7 @@
 // the Day/Week/Month windows are relative to "now".
 use chrono::DateTime;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
@@ -37,9 +37,21 @@ struct Manifest {
 
 pub struct Store {
     pub events: Vec<RawEvent>,
-    seen: HashSet<String>,
+    // message id -> index in `events`. A single assistant message can be split
+    // across several JSONL lines (e.g. thinking on one line, tool_use on the
+    // next) that all share its id; we merge their tool calls into one event and
+    // count its token usage only once.
+    index: HashMap<String, usize>,
     manifest: Manifest,
 }
+
+// Bump when the parsing/extraction logic changes in a way that requires
+// re-reading logs from scratch (the incremental manifest would otherwise skip
+// already-seen bytes and miss newly-extracted facts).
+//   v2: count slash-command skill invocations (`/skill`), not just Skill tool_use.
+//   v3: merge tool_use across lines sharing a message id (a thinking line + a
+//       tool_use line were deduped, dropping the tool call).
+const STORE_VERSION: u32 = 3;
 
 fn projects_dir() -> Option<PathBuf> {
     Some(dirs::home_dir()?.join(".claude").join("projects"))
@@ -57,6 +69,13 @@ impl Store {
         let mut events: Vec<RawEvent> = Vec::new();
         let mut manifest = Manifest::default();
         if let Some(dir) = cache_dir() {
+            // If the cache was written by an older parser, discard it so ingest
+            // does a full rescan and picks up newly-extracted facts.
+            let version_ok = fs::read_to_string(dir.join("version"))
+                .ok()
+                .and_then(|s| s.trim().parse::<u32>().ok())
+                == Some(STORE_VERSION);
+            if version_ok {
             if let Ok(t) = fs::read_to_string(dir.join("events.json")) {
                 if let Ok(v) = serde_json::from_str::<Vec<RawEvent>>(&t) {
                     events = v;
@@ -67,15 +86,17 @@ impl Store {
                     manifest = m;
                 }
             }
+            }
         }
-        let seen = events
+        let index = events
             .iter()
-            .filter(|e| !e.id.is_empty())
-            .map(|e| e.id.clone())
+            .enumerate()
+            .filter(|(_, e)| !e.id.is_empty())
+            .map(|(i, e)| (e.id.clone(), i))
             .collect();
         Store {
             events,
-            seen,
+            index,
             manifest,
         }
     }
@@ -88,6 +109,7 @@ impl Store {
             if let Ok(t) = serde_json::to_string(&self.manifest) {
                 let _ = fs::write(dir.join("offsets.json"), t);
             }
+            let _ = fs::write(dir.join("version"), STORE_VERSION.to_string());
         }
     }
 
@@ -148,8 +170,16 @@ impl Store {
                 }
                 let Ok(s) = std::str::from_utf8(line) else { continue };
                 if let Some(ev) = parse_line(s) {
-                    if !ev.id.is_empty() && !self.seen.insert(ev.id.clone()) {
-                        continue; // already counted
+                    if !ev.id.is_empty() {
+                        if let Some(&i) = self.index.get(&ev.id) {
+                            // Same message, another line: merge its tool calls
+                            // (don't re-count tokens — usage repeats per line).
+                            let prev = &mut self.events[i];
+                            prev.mcp.extend(ev.mcp);
+                            prev.skills.extend(ev.skills);
+                            continue;
+                        }
+                        self.index.insert(ev.id.clone(), self.events.len());
                     }
                     self.events.push(ev);
                 }
@@ -164,9 +194,63 @@ impl Store {
 /// Parse one JSONL line into a RawEvent (assistant messages only).
 fn parse_line(line: &str) -> Option<RawEvent> {
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
-    if v.get("type")?.as_str()? != "assistant" {
+    match v.get("type")?.as_str()? {
+        "assistant" => parse_assistant(&v),
+        // Skills invoked via slash command (e.g. `/find-skills`) are logged as a
+        // user message with a <command-name> tag, NOT as a Skill tool_use, so
+        // they need a separate path or they'd never be counted.
+        "user" => parse_user_command(&v),
+        _ => None,
+    }
+}
+
+/// Extract the inner text of `<tag>...</tag>` from `s`, if present.
+fn extract_tag(s: &str, tag: &str) -> Option<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = s.find(&open)? + open.len();
+    let rest = &s[start..];
+    let end = rest.find(&close)?;
+    Some(rest[..end].to_string())
+}
+
+/// A user message that is a slash-command invocation of a skill, e.g.
+/// `<command-name>/find-skills</command-name>`. The skill name is left
+/// unfiltered here; compute_event drops non-user skills via the whitelist.
+fn parse_user_command(v: &serde_json::Value) -> Option<RawEvent> {
+    let text = v.get("message")?.get("content")?.as_str()?;
+    let raw = extract_tag(text, "command-name")?;
+    let skill = raw.trim().trim_start_matches('/').trim().to_string();
+    if skill.is_empty() {
         return None;
     }
+    let ts = v.get("timestamp")?.as_str()?;
+    let ts_ms = DateTime::parse_from_rfc3339(ts).ok()?.timestamp_millis();
+    let session = v
+        .get("sessionId")
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .to_string();
+    // dedup key: the line's own uuid (command messages have no message.id)
+    let id = v.get("uuid").and_then(|i| i.as_str())?.to_string();
+    if id.is_empty() {
+        return None;
+    }
+    Some(RawEvent {
+        ts_ms,
+        session,
+        model: String::new(), // not an LLM request → no model/tokens/cost
+        in_tok: 0.0,
+        cc: 0.0,
+        cr: 0.0,
+        out_tok: 0.0,
+        mcp: Vec::new(),
+        skills: vec![skill],
+        id,
+    })
+}
+
+fn parse_assistant(v: &serde_json::Value) -> Option<RawEvent> {
     let msg = v.get("message")?;
     let model = msg.get("model").and_then(|m| m.as_str()).unwrap_or("unknown");
     if model == "<synthetic>" {

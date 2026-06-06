@@ -152,7 +152,10 @@ export function BarList({ items, theme, accent, limit = 5 }:
   { items: NamedCount[]; theme: Theme; accent?: string; limit?: number }) {
   const t = theme; accent = accent || t.accent;
   const shown = items.slice(0, limit);
-  const max = Math.max(...items.map((i) => i.count), 1);
+  // Bar length = this item's share of the *total* calls (count / total), so the
+  // track (light) is the whole, the fill (accent) is the percentage — same logic
+  // as the Total-tokens bar.
+  const total = items.reduce((s, i) => s + i.count, 0) || 1;
   const more = items.length - shown.length;
   return (
     <div>
@@ -163,7 +166,7 @@ export function BarList({ items, theme, accent, limit = 5 }:
         <div key={i} style={{ display: "flex", alignItems: "center", gap: 9, padding: "3px 0" }}>
           <span style={{ font: `500 10.5px ${t.mono}`, color: t.text, flex: "0 0 134px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{it.name}</span>
           <div style={{ flex: 1, height: 5, borderRadius: 3, background: t.gridLine, overflow: "hidden" }}>
-            <div style={{ width: `${(it.count / max) * 100}%`, height: "100%", background: accent, borderRadius: 3 }} />
+            <div style={{ width: `${(it.count / total) * 100}%`, height: "100%", background: accent, borderRadius: 3 }} />
           </div>
           <span style={{ font: `600 10.5px ${t.mono}`, color: t.dim, flex: "0 0 auto", minWidth: 30, textAlign: "right" }}>{fmtInt(it.count)}</span>
         </div>

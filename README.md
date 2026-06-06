@@ -1,110 +1,118 @@
 # Tokenscope
 
-macOS 菜单栏工具，展示 Claude CLI 的 **每日 Token 用量、估算花费、按模型 / MCP / Skill 的调用统计**。
+**English** · [中文](README-zh.md)
 
-技术栈：**Tauri 2 + React + TypeScript**（前端）/ **Rust**（数据层）。
+A macOS menu-bar app that shows your Claude CLI **daily token usage, estimated cost, and per-model / MCP / Skill call breakdown**.
 
-![Tokenscope 面板（深色 / 浅色）](docs/screenshot.png)
+Stack: **Tauri 2 + React + TypeScript** (frontend) / **Rust** (data layer).
 
-## 它做什么
+![Tokenscope panel (dark / light)](docs/screenshot.png)
 
-- 菜单栏图标旁显示当日 Token 数（如 `⬡ 14.00M`）
-- 点击打开面板：Day / Week / Month 切换
-- 指标：总 Token（input/output）、估算花费、Requests / Sessions
-- 三个切片：**按模型** / **按 MCP 调用** / **按 Skill 调用**
-- 成本甜甜圈（hover 看单模型）、年度活跃热力图
-- **只统计用户自己安装的 MCP / Skill**，过滤所有 Claude 内置工具与 Anthropic 自带 MCP
+## What it does
 
-## 数据来源（零侵入，只读）
+- Shows today's token count next to the menu-bar icon (e.g. `⬡ 14.00M`)
+- Click to open the panel: Day / Week / Month toggle
+- Metrics: total tokens (input/output), estimated cost, requests / sessions
+- Three breakdowns: **by model** / **by MCP call** / **by Skill call**
+- Cost donut (hover for a single model), year-long activity heatmap
+- **Counts only the MCP servers / Skills you installed yourself** — all Claude built-in tools and Anthropic's bundled MCP servers are filtered out
 
-| 用途 | 路径 |
-|------|------|
-| 会话日志（Token / 模型 / 工具调用） | `~/.claude/projects/**/*.jsonl` |
-| 用户 MCP 白名单 | `~/.claude.json` → `mcpServers` + `projects[*].mcpServers` |
-| 用户 Skill 白名单 | `~/.claude/skills/` 目录 |
-| 模型价格 | **主**：[models.dev](https://models.dev/api.json)（裸模型名，匹配 Claude CLI 日志）→ **兜底**：[LiteLLM](https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json) → 内置快照。缓存于 `~/Library/Caches/tokenscope/`，24h 刷新，离线回退 |
+## Data sources (zero-intrusion, read-only)
 
-### 关键处理
-- 按 `message.id` 去重（流式/重试会重复 usage）
-- token 拆分：`input`(未缓存) / `cache`(creation+read) / `output`；UI 默认把 cache 并入 In 显示，并单列「cached %」
-- 价格匹配：精确名 → 归一化名（去厂商前缀 + `.`↔`p`，如 `glm-5.1`⇄`glm-5p1`）；models.dev 优先官方裸名价
-- 成本按四类 token 分别计价；模型带 `priced` 标记，**两源都查不到的模型只计 Token、UI 标注「暂无定价」**
-- 日志只有裸模型名、无厂商信息 → 第三方模型默认取官方厂商价（估算）
-- 工具分类：`mcp__<server>__*` 且 server 在用户配置中 → MCP；`Skill` 且 `input.skill` 在 skills 目录中 → Skill；其余忽略
+| Purpose | Path |
+|---------|------|
+| Session logs (tokens / model / tool calls) | `~/.claude/projects/**/*.jsonl` |
+| User MCP whitelist | `~/.claude.json` → `mcpServers` + `projects[*].mcpServers` |
+| User Skill whitelist | `~/.claude/skills/` directory |
+| Model prices | **Primary**: [models.dev](https://models.dev/api.json) (bare model names, matching Claude CLI logs) → **Fallback**: [LiteLLM](https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json) → built-in snapshot. Cached in `~/Library/Caches/tokenscope/`, refreshed every 24h, with offline fallback |
 
-> 花费为按公开价格的**估算**；订阅用户应理解为「等效消费价值」。
+### Key processing
+- Deduplicated by `message.id` (streaming/retries repeat the same usage); when one message spans multiple lines, its tool calls are merged and the token usage is counted once
+- Token split: `input` (uncached) / `cache` (creation+read) / `output`; the UI folds cache into "In" by default and shows a separate "cached %"
+- Price matching: exact id → normalized id (strip vendor prefix + `.`↔`p`, e.g. `glm-5.1`⇄`glm-5p1`); models.dev's official bare-name price wins
+- Cost is priced per the four token types; each model carries a `priced` flag — **models not found in either source still count tokens but are labelled "no price" in the UI**
+- Logs contain only the bare model name (no vendor) → third-party models default to the official vendor price (an estimate)
+- Tool classification: `mcp__<server>__*` where the server is in your config → MCP; a Skill call (the `Skill` tool's `input.skill`, or a `/skill` slash command) whose name is in your skills directory → Skill; everything else is ignored
 
-## 安装
+> Cost is an **estimate** based on public prices; subscription users should read it as "equivalent spend value".
 
-### 方式一：Homebrew（推荐）
+## Install
+
+### Option 1: Homebrew (recommended)
 
 ```bash
 brew install --cask hdusy/tokenscope/tokenscope
 ```
 
-安装后会自动清除隔离属性（cask 的 `postflight` 已内置 `xattr -cr`），**首次直接打开即可，不会弹「Apple 无法验证」**。
+The cask's `postflight` strips the quarantine attribute (`xattr -cr`) automatically, so **it opens on first launch without the "Apple cannot verify" prompt**.
 
-打开一次后即注册为登录项，之后**每次开机自动在菜单栏运行**。
+After you open it once it registers as a login item, then **launches in the menu bar automatically on every boot**.
 
-升级：
+Upgrade:
 
 ```bash
 brew upgrade --cask tokenscope
 ```
 
-### 方式二：下载 .dmg
+### Option 2: Download the .dmg
 
-1. 从 [Releases](https://github.com/HduSy/tokenscope/releases) 下载最新的 `Tokenscope_*_universal.dmg`（同时支持 Apple Silicon 与 Intel）
-2. 拖入「应用程序」
-3. 因为是**未签名 / 未公证**构建，首次打开会被 Gatekeeper 拦截，二选一：
-   - 右键 App →「打开」→ 再次确认「打开」，或
-   - 终端执行一次：
+1. Download the latest `Tokenscope_*_universal.dmg` from [Releases](https://github.com/HduSy/tokenscope/releases) (works on both Apple Silicon and Intel)
+2. Drag it into Applications
+3. Because the build is **unsigned / unnotarized**, Gatekeeper blocks the first launch — pick one:
+   - Right-click the app → **Open** → confirm **Open** again, or
+   - Run once in the terminal:
      ```bash
      xattr -cr /Applications/Tokenscope.app && open /Applications/Tokenscope.app
      ```
 
-> 未签名是当前的已知限制。要彻底「双击直开」需 Apple Developer ID 签名 + 公证，见 `PRD.md` §6.4。
+> Unsigned is a current known limitation. A true "double-click to open" experience requires Apple Developer ID signing + notarization — see `PRD.md` §6.4.
 
-### 首次启动后
+### After first launch
 
-- 菜单栏出现图标 + 当日 Token 数（如 `⬡ 12.40M`）
-- 左键点击图标开/关面板，右键出菜单（Open / Refresh / Quit）
-- 已自动设置**登录自启**，无需手动配置
+- An icon plus today's token count appears in the menu bar (e.g. `⬡ 12.40M`)
+- Left-click the icon to toggle the panel; right-click for the menu (Open / Refresh / Quit)
+- **Launch-at-login is set up automatically** — no manual configuration needed
 
-## 开发
+## Develop
 
 ```bash
 pnpm install
-pnpm tauri dev         # 启动桌面 App（需要 Rust 工具链）
+pnpm tauri dev         # launch the desktop app (requires the Rust toolchain)
 ```
 
-仅预览前端（用真实数据快照 `public/dev-dashboard.json`）：
+Frontend-only preview (using the real-data snapshot `public/dev-dashboard.json`):
 
 ```bash
 pnpm dev               # http://localhost:1420
-# 刷新快照：
+# refresh the snapshot:
 cd src-tauri && cargo run --example dump > ../public/dev-dashboard.json
 ```
 
-## 构建
+## Build
 
 ```bash
-pnpm tauri build       # 产出 .app / .dmg 到 src-tauri/target/release/bundle/
+pnpm tauri build       # outputs .app / .dmg to src-tauri/target/release/bundle/
 ```
 
-分发见 `PRD.md` §6.3（推荐 Homebrew Cask；`.dmg` 直接下载建议代码签名 + 公证）。
+For distribution see `PRD.md` §6.3 (Homebrew Cask recommended; direct `.dmg` downloads benefit from code signing + notarization).
 
-## 结构
+## Structure
 
 ```
-src/                  React 前端
-  data.ts             类型 + Tauri 桥 + 主题 + 格式化
-  charts.tsx          图表原语（柱状/甜甜圈/sparkline/热力图/分段控件）
-  App.tsx             Panel A 主面板
+src/                  React frontend
+  data.ts             types + Tauri bridge + theme + formatting
+  charts.tsx          chart primitives (bars / donut / sparkline / heatmap / segmented control)
+  App.tsx             main panel
 src-tauri/src/
-  parser.rs           JSONL 解析 + 聚合（Day/Week/Month + 热力图）
-  pricing.rs          LiteLLM 价格表加载与计价
-  config.rs           用户 MCP / Skill 白名单
-  model.rs            返回给前端的数据结构
-  lib.rs              Tauri 命令 + 菜单栏托盘
+  store.rs            incremental JSONL ingest (dedup by message.id + multi-line merge)
+  parser.rs           aggregation (Day/Week/Month + heatmap)
+  pricing.rs          models.dev / LiteLLM price loading and costing
+  config.rs           user MCP / Skill whitelist
+  model.rs            data structures returned to the frontend
+  lib.rs              Tauri commands + menu-bar tray
 ```
+
+## Bug log
+
+Notable bugs found during development — symptom, root cause, and fix — are
+collected in [docs/BUGFIXES.md](docs/BUGFIXES.md).

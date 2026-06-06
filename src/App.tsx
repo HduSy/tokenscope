@@ -258,7 +258,7 @@ function Panel({ dash, dark, onToggleTheme, openGen, active }: { dash: Dashboard
               <span style={{ font: `500 10px ${t.mono}`, color: t.faint, whiteSpace: "nowrap" }}><span style={{ color: t.text, fontWeight: 600 }}>{fmtInt(M.skillCalls)}</span> · {M.skills} skills</span>
             </div>
             {P.skills.length > 0
-              ? <BarList items={P.skills} theme={t} accent={t.accentSoft} />
+              ? <BarList items={P.skills} theme={t} accent={t.accent} />
               : <div style={{ font: `500 10px ${t.mono}`, color: t.faint, padding: "2px 0" }}>No skill calls in this period</div>}
           </>
         )}
