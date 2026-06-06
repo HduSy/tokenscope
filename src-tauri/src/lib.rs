@@ -61,7 +61,14 @@ fn fmt_tokens_m(m: f64) -> String {
     if m >= 1.0 {
         format!("{:.2}M", m)
     } else {
-        format!("{}K", (m * 1000.0).round() as i64)
+        let k = (m * 1000.0).round() as i64;
+        // no usage yet (e.g. just past midnight) — "0K" reads like "OK", so
+        // show a clearer idle label instead.
+        if k <= 0 {
+            "Ready".to_string()
+        } else {
+            format!("{k}K")
+        }
     }
 }
 
