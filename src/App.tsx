@@ -9,6 +9,33 @@ import {
   TokenGlyph, Segmented, BarChart, Sparkline, CostDonut, BarList, Heatmap,
 } from "./charts";
 
+// Count up to `target`. Restarts from 0 whenever `resetKey` changes (popover
+// open / period switch); on a live value change it eases from the current
+// value to the new one instead of snapping back to 0.
+function useCountUp(target: number, resetKey: string, duration = 850): number {
+  const [val, setVal] = useState(0);
+  const valRef = useRef(0);
+  const keyRef = useRef<string | null>(null);
+  const rafRef = useRef(0);
+  useEffect(() => {
+    cancelAnimationFrame(rafRef.current);
+    const reset = keyRef.current !== resetKey;
+    keyRef.current = resetKey;
+    const from = reset ? 0 : valRef.current;
+    const start = performance.now();
+    const ease = (t: number) => 1 - Math.pow(1 - t, 3); // easeOutCubic
+    const set = (v: number) => { valRef.current = v; setVal(v); };
+    const tick = (now: number) => {
+      const p = Math.min(1, (now - start) / duration);
+      set(from + (target - from) * ease(p));
+      if (p < 1) rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [resetKey, target, duration]);
+  return val;
+}
+
 function Delta({ v, theme }: { v: number; theme: Theme }) {
   const up = v >= 0;
   const col = up ? theme.accent : "#e0795f";
@@ -104,11 +131,13 @@ function ThemeToggle({ dark, theme, onToggle }: { dark: boolean; theme: Theme; o
   );
 }
 
-function Panel({ dash, dark, onToggleTheme }: { dash: Dashboard; dark: boolean; onToggleTheme: () => void }) {
+function Panel({ dash, dark, onToggleTheme, openGen }: { dash: Dashboard; dark: boolean; onToggleTheme: () => void; openGen: number }) {
   const t = TH[dark ? "dark" : "light"];
   const [period, setPeriod] = useState<"Day" | "Week" | "Month">("Week");
   const P: PeriodReport = period === "Day" ? dash.day : period === "Month" ? dash.month : dash.week;
   const M = P.metrics;
+  // animated Total tokens: counts up from 0 on each open / period switch
+  const animTotal = useCountUp(M.totalTokens, `${period}:${openGen}`);
   const models = P.models;
   // Hide noise: 0% token-share rows, and $0 entries in the cost donut.
   const tokenModels = models.filter((m) => pct(m.tokens, M.totalTokens || 1) > 0);
@@ -154,7 +183,7 @@ function Panel({ dash, dark, onToggleTheme }: { dash: Dashboard; dark: boolean; 
           <div>
             <div style={{ font: `500 10px ${t.ui}`, color: t.dim, letterSpacing: ".04em", textTransform: "uppercase" }}>Total tokens</div>
             <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginTop: 3 }}>
-              <span style={{ font: `600 30px ${t.mono}`, color: t.text, letterSpacing: "-.01em" }}>{M.totalTokens.toFixed(2)}<span style={{ font: `500 15px ${t.mono}`, color: t.dim, marginLeft: 2 }}>M</span></span>
+              <span style={{ font: `600 30px ${t.mono}`, color: t.text, letterSpacing: "-.01em" }}>{animTotal.toFixed(2)}<span style={{ font: `500 15px ${t.mono}`, color: t.dim, marginLeft: 2 }}>M</span></span>
               {Math.round(M.deltaTokens) !== 0 && <Delta v={M.deltaTokens} theme={t} />}
             </div>
           </div>
@@ -241,6 +270,7 @@ function Panel({ dash, dark, onToggleTheme }: { dash: Dashboard; dark: boolean; 
 export default function App() {
   const [dash, setDash] = useState<Dashboard | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [openGen, setOpenGen] = useState(0);
   const [theme, setTheme] = useState<"dark" | "light">(() => {
     const saved = typeof localStorage !== "undefined" ? localStorage.getItem("tokenscope-theme") : null;
     if (saved === "dark" || saved === "light") return saved;
@@ -267,7 +297,10 @@ export default function App() {
     // refetch the instant the popover gains focus (i.e. is opened)
     getCurrentWindow()
       .onFocusChanged(({ payload: focused }) => {
-        if (focused) fetchDashboard().then(setDash).catch(() => {});
+        if (focused) {
+          setOpenGen((g) => g + 1); // re-run the count-up on each open
+          fetchDashboard().then(setDash).catch(() => {});
+        }
       })
       .then((u) => unlisten.push(u));
     return () => unlisten.forEach((u) => u());
@@ -291,5 +324,5 @@ export default function App() {
       </div>
     );
   }
-  return <Panel dash={dash} dark={dark} onToggleTheme={toggleTheme} />;
+  return <Panel dash={dash} dark={dark} onToggleTheme={toggleTheme} openGen={openGen} />;
 }
