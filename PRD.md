@@ -262,6 +262,52 @@ cost = input_tokens     × price.input_cost_per_token
 - **开机自启**：通过 `ServiceManagement` framework（Swift）或对应插件注册 Login Item，设置中可开关
 - **不上架 Mac App Store**（v1）：App Store 沙盒对读取 `~/.claude/` 任意路径限制较多，且审核周期长；优先走 Homebrew / 直接下载
 
+### 6.4 代码签名与公证（Code Signing & Notarization）
+
+为让用户"双击直接打开、无 Gatekeeper 拦截"，并证明发布者身份，需对 macOS 产物做 **Developer ID 签名 + Apple 公证**。
+
+#### 签名层级
+| 层级 | 签名方式 | 用户体验 | 成本 |
+|------|---------|---------|------|
+| 未签名 / Ad-hoc | `codesign -s -` | 首次打开报"无法验证开发者"，需右键→打开 | 免费 |
+| 自签名证书 | 自建证书 | 仍报警告（系统不信任自建根） | 免费但**对外无意义** |
+| **Developer ID**（正解） | Apple 颁发的 `Developer ID Application` 证书 | 双击直开，Gatekeeper 放行 | **$99/年** |
+
+> macOS 上唯一被系统信任、能"证明开发者身份"的方式，是加入 Apple Developer Program，用 Apple 签发的 Developer ID 证书签名。自签名证书系统不认，等同未签名。
+
+#### 正规流程（签名 → 公证 → 钉票）
+现代 macOS（10.15+）仅签名不够，**必须公证**：上传 App 给 Apple 自动扫描，通过后取回票据再"钉"回产物。
+```
+codesign（Developer ID + Hardened Runtime + 时间戳）
+   ↓
+打包 .dmg / .zip
+   ↓
+notarytool submit（上传 Apple，等待 Approved）
+   ↓
+stapler staple（公证票据钉入 .dmg/.app）
+```
+
+#### Tauri 集成
+Tauri 原生支持，配好环境变量后 `tauri build` 自动完成签名+公证：
+- `tauri.conf.json` → `bundle.macOS`：`hardenedRuntime: true`（公证强制要求）、`signingIdentity`（默认 `-` ad-hoc，被环境变量覆盖）
+- 环境变量优先级：`APPLE_SIGNING_IDENTITY` > 配置；未设证书时自动退化为 ad-hoc/未签名，不阻断本地构建
+
+#### CI 自动签名（GitHub Actions）
+`release.yml` 的 `tauri-action` 已预置以下 Secret 占位，**未设置时照常出未签名包**，配齐后打 tag 即自动签名+公证：
+
+| Secret | 内容 |
+|--------|------|
+| `APPLE_CERTIFICATE` | Developer ID `.p12` 的 base64 |
+| `APPLE_CERTIFICATE_PASSWORD` | 导出 `.p12` 时设置的密码 |
+| `APPLE_SIGNING_IDENTITY` | `Developer ID Application: Name (TEAMID)` |
+| `APPLE_ID` | Apple ID 邮箱 |
+| `APPLE_PASSWORD` | App 专用密码（appleid.apple.com 生成，非登录密码） |
+| `APPLE_TEAM_ID` | 10 位 Team ID |
+
+#### 渐进策略
+- **当前（v1 自用/小范围）**：未签名，文档注明"右键→打开"或 `xattr -dr com.apple.quarantine Tokenscope.app`
+- **公开分发（Homebrew Cask / 陌生用户下载）**：上 Developer ID（$99/年），填齐 Secret，签名管线一劳永逸
+
 ---
 
 ## 7. 非功能需求

@@ -72,6 +72,12 @@ pub fn run() {
     let last_hidden = Arc::new(AtomicI64::new(0));
 
     tauri::Builder::default()
+        // Must be the FIRST plugin: a second launch (e.g. reinstall/relaunch)
+        // hands off to the already-running instance and exits, so the menu bar
+        // never shows two icons.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            show_popover(app);
+        }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_positioner::init())
         .plugin(tauri_plugin_autostart::init(

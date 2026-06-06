@@ -43,6 +43,23 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # --- Code signing + notarization (optional) ---
+          # Leave the secrets unset for an unsigned/ad-hoc build. Once you have
+          # an Apple Developer ID, add these in repo Settings → Secrets and the
+          # build will be signed + notarized automatically.
+          #
+          #   APPLE_CERTIFICATE          base64 of your Developer ID .p12
+          #   APPLE_CERTIFICATE_PASSWORD password used when exporting the .p12
+          #   APPLE_SIGNING_IDENTITY     e.g. "Developer ID Application: Name (TEAMID)"
+          #   APPLE_ID                   your Apple ID email
+          #   APPLE_PASSWORD             app-specific password (appleid.apple.com)
+          #   APPLE_TEAM_ID              your 10-char Team ID
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "Tokenscope ${{ github.ref_name }}"

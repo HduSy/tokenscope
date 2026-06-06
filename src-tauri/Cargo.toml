@@ -23,6 +23,7 @@ chrono = { version = "0.4", features = ["serde"] }
 dirs = "5"
 ureq = { version = "2", features = ["json"] }
 walkdir = "2"
+tauri-plugin-single-instance = "2.4.2"
 
 [profile.release]
 panic = "abort"
