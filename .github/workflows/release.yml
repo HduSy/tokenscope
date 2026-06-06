@@ -1,0 +1,58 @@
+name: Release
+
+# Push a version tag (e.g. v0.1.0) to build the app and publish a GitHub Release.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Setup Rust (universal targets)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache Rust
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Install frontend deps
+        run: pnpm install
+
+      - name: Build & publish release (universal .dmg)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "Tokenscope ${{ github.ref_name }}"
+          releaseBody: |
+            macOS menu-bar dashboard for Claude CLI token usage.
+
+            Download `Tokenscope_*_universal.dmg` below (works on Apple Silicon and Intel).
+
+            > Unsigned build — on first launch, right-click the app → **Open**
+            > (or install via `brew` once a cask is published).
+          releaseDraft: true
+          prerelease: false
+          args: --target universal-apple-darwin
