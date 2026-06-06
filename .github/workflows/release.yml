@@ -44,22 +44,20 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # --- Code signing + notarization (optional) ---
-          # Leave the secrets unset for an unsigned/ad-hoc build. Once you have
-          # an Apple Developer ID, add these in repo Settings → Secrets and the
-          # build will be signed + notarized automatically.
+          # UNSIGNED BUILD BY DEFAULT. Do NOT uncomment these until the matching
+          # secrets actually exist: tauri's bundler treats an empty
+          # APPLE_CERTIFICATE env var as "a certificate is present" and then
+          # fails on `security import` ("SecKeychainItemImport ... not valid").
           #
-          #   APPLE_CERTIFICATE          base64 of your Developer ID .p12
-          #   APPLE_CERTIFICATE_PASSWORD password used when exporting the .p12
-          #   APPLE_SIGNING_IDENTITY     e.g. "Developer ID Application: Name (TEAMID)"
-          #   APPLE_ID                   your Apple ID email
-          #   APPLE_PASSWORD             app-specific password (appleid.apple.com)
-          #   APPLE_TEAM_ID              your 10-char Team ID
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Once you have an Apple Developer ID, add these in repo
+          # Settings → Secrets and uncomment to get signed + notarized builds:
+          #
+          #   APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}                    # base64 of Developer ID .p12
+          #   APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}  # .p12 export password
+          #   APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}          # "Developer ID Application: Name (TEAMID)"
+          #   APPLE_ID: ${{ secrets.APPLE_ID }}                                      # Apple ID email
+          #   APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}                          # app-specific password
+          #   APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}                            # 10-char Team ID
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "Tokenscope ${{ github.ref_name }}"
