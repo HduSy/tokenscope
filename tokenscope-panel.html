@@ -323,15 +323,19 @@ function BarChart({ data, theme, height = 96, accent, accentSoft, radius = 3 }) 
   const effRadius = n > 16 ? 1 : radius;
   const [hi, setHi] = useState(null);
   const [tip, setTip] = useState({ x: 0, y: 0 });
+  const wrapRef = useRef(null);
+  // absolute, relative to this wrapper — the card's backdrop-filter would make a
+  // position:fixed tooltip anchor to the card instead of the viewport. Anchor to
+  // the visible bar top (baseline − bar height) so short bars don't overlap the
+  // legend above.
   const onBar = (d, e) => {
+    const wrap = wrapRef.current.getBoundingClientRect();
     const r = e.currentTarget.getBoundingClientRect();
-    // anchor to the visible bar top (baseline − bar height), not the full-height
-    // column top, so short bars don't push the tooltip up over the legend above
     const barPx = ((d.input + d.cache + d.output) / max) * height;
-    setHi(d); setTip({ x: r.left + r.width / 2, y: r.bottom - barPx });
+    setHi(d); setTip({ x: r.left - wrap.left + r.width / 2, y: r.bottom - barPx - wrap.top });
   };
   return (
-    <div>
+    <div ref={wrapRef} style={{ position: 'relative' }}>
       <div style={{ position: 'relative', height, display: 'flex', alignItems: 'flex-end', gap: `${gapPct}%` }}>
         {[0.25, 0.5, 0.75, 1].map((g, i) => (
           <div key={i} style={{ position: 'absolute', left: 0, right: 0, bottom: `${g * 100}%`, borderTop: `1px solid ${t.gridLine}` }} />
@@ -357,11 +361,10 @@ function BarChart({ data, theme, height = 96, accent, accentSoft, radius = 3 }) 
         ))}
       </div>
       {hi && (
-        <div style={{ position: 'fixed',
-          left: Math.min(Math.max(tip.x, 96), window.innerWidth - 96),
-          top: tip.y - 8, transform: 'translate(-50%,-100%)',
+        <div style={{ position: 'absolute',
+          left: tip.x, top: tip.y - 8, transform: 'translate(-50%,-100%)',
           background: t.tip, color: '#fff', borderRadius: 6, padding: '5px 8px',
-          font: `500 10px ${t.mono}`, whiteSpace: 'nowrap', pointerEvents: 'none', zIndex: 9999,
+          font: `500 10px ${t.mono}`, whiteSpace: 'nowrap', pointerEvents: 'none', zIndex: 50,
           boxShadow: '0 4px 14px rgba(0,0,0,0.35)' }}>
           <span style={{ color: accent, fontWeight: 600 }}>
             {(() => { const tot = hi.input + hi.cache + hi.output; return tot === 0 ? 'No tokens' : TD.fmtTokens(tot) + ' tokens'; })()}
@@ -494,9 +497,12 @@ function Heatmap({ days, theme, accent, gap = 2 }) {
     if (monthLabels.length === 0) { const m = present[0].date.getMonth(); monthLabels.push({ frac: wi / weeks.length, m }); seenM.add(m); return; }
     for (const d of present) { const m = d.date.getMonth(); if (d.date.getDate() <= 7 && !seenM.has(m)) { seenM.add(m); monthLabels.push({ frac: wi / weeks.length, m }); break; } }
   });
+  // absolute, relative to the heatmap wrapper — the card's backdrop-filter
+  // would make a position:fixed tooltip anchor to the card, not the viewport.
   const onCell = (d, e) => {
+    const wrap = wrapRef.current.getBoundingClientRect();
     const r = e.target.getBoundingClientRect();
-    setHi(d); setTip({ x: r.left + r.width / 2, y: r.top });
+    setHi(d); setTip({ x: r.left - wrap.left + r.width / 2, y: r.top - wrap.top });
   };
   return (
     <div ref={wrapRef} style={{ position: 'relative' }}>
@@ -524,11 +530,10 @@ function Heatmap({ days, theme, accent, gap = 2 }) {
         <span>More</span>
       </div>
       {hi && (
-        <div style={{ position: 'fixed',
-          left: Math.min(Math.max(tip.x, 96), window.innerWidth - 96),
-          top: tip.y - 8, transform: 'translate(-50%,-100%)',
+        <div style={{ position: 'absolute',
+          left: tip.x, top: tip.y - 8, transform: 'translate(-50%,-100%)',
           background: t.tip, color: '#fff', borderRadius: 6, padding: '5px 8px',
-          font: `500 10px ${t.mono}`, whiteSpace: 'nowrap', pointerEvents: 'none', zIndex: 9999,
+          font: `500 10px ${t.mono}`, whiteSpace: 'nowrap', pointerEvents: 'none', zIndex: 50,
           boxShadow: '0 4px 14px rgba(0,0,0,0.35)' }}>
           <span style={{ color: accent, fontWeight: 600 }}>{hi.tokens === 0 ? 'No calls' : TD.fmtTokens(hi.tokens) + ' tokens'}</span>
           <span style={{ opacity: 0.7 }}> · {TD.fmtDate(hi.date)}</span>
