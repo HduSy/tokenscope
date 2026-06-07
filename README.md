@@ -38,6 +38,35 @@ Stack: **Tauri 2 + React + TypeScript** (frontend) / **Rust** (data layer).
 
 > Cost is an **estimate** based on public prices; subscription users should read it as "equivalent spend value".
 
+### Token types & cost formula
+
+Every assistant message's `usage` reports four **mutually exclusive** token counts (they never double-count the same token):
+
+| Stage | `usage` field | What it is | Price (relative to input) |
+|-------|---------------|------------|---------------------------|
+| **Input** (uncached) | `input_tokens` | New prompt tokens sent this turn | 1× |
+| **Cache write** | `cache_creation_input_tokens` | Context written into the prompt cache | ~1.25× |
+| **Cache read** (hit) | `cache_read_input_tokens` | Context replayed from the cache | ~0.1× (much cheaper) |
+| **Output** | `output_tokens` | Tokens the model generated | ~5× |
+
+**Tokens** (per period, summed over messages):
+
+```
+total  = input + cache_creation + cache_read + output
+# the UI shows:  In = input + cache_creation + cache_read,  Out = output,  cached % = cache_read / total
+```
+
+**Cost** (each stage priced at its own per-token rate from the price table):
+
+```
+cost = input            × price.input
+     + cache_creation   × price.cache_creation
+     + cache_read       × price.cache_read     # cache hits billed at the discounted read rate
+     + output           × price.output
+```
+
+So a cache hit is **not** billed as normal input — it uses the dedicated (cheaper) `cache_read` rate, which is why heavily-cached usage shows a huge token count but a modest cost. The UI folds cache into "In" for display only; billing always uses the four separate rates above.
+
 ## Install
 
 ### Option 1: Homebrew (recommended)
