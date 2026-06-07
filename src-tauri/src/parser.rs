@@ -294,7 +294,8 @@ fn report_day(events: &[Event], now: DateTime<Local>) -> PeriodReport {
 
     let series = (0..24)
         .map(|h| SeriesPoint {
-            label: if h % 6 == 0 {
+            // axis ticks every 4h, skipping the 00/24 endpoints
+            label: if h % 4 == 0 && h != 0 {
                 format!("{:02}", h)
             } else {
                 String::new()

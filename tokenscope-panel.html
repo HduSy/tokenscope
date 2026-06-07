@@ -50,7 +50,7 @@ const WEEK = [0, 2.0, 1.1, 0.7, 56.0, 84.0, 161.1].map((tot, i) =>
 const DAY = (() => {
   const shape = [0,0,0,0,0,0,0,0,0,3.9,8.2,14.1,9.0,5.4,7.1,18.3,22.4,11.8,9.4,6.1,4.2,2.1,0,0];
   return shape.map((tot, h) =>
-    pt(h % 6 === 0 ? String(h).padStart(2, '0') : '', `${String(h).padStart(2, '0')}:00`, tot));
+    pt((h % 4 === 0 && h !== 0) ? String(h).padStart(2, '0') : '', `${String(h).padStart(2, '0')}:00`, tot));
 })();
 
 const MONTH = (() => {
