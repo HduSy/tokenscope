@@ -174,5 +174,8 @@ fix. Newest first. Useful as a reference for similar issues.
 - "Month" was also changed from a rolling 30-day window to the **current
   calendar month vs the previous calendar month** — a behavior change requested
   during testing, not a bug.
+- "Week" was likewise changed from a rolling last-7-days window to the **current
+  calendar week (Monday–Sunday) vs the previous calendar week**, so the delta
+  compares this week against last week.
 - Delta colors were swapped so usage/cost **up = red** (bad), **down = green**
   (good).

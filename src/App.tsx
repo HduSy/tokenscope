@@ -154,7 +154,7 @@ function Panel({ dash, dark, onToggleTheme, openGen, active }: { dash: Dashboard
   // models that were used but have no LiteLLM pricing (cost unknown, not $0)
   const unpricedModels = models.filter((m) => !m.priced && m.tokens > 0);
   const maxM = Math.max(...tokenModels.map((m) => m.tokens), 1e-9);
-  const trendSub = { Day: "today 24h", Week: "last 7 days", Month: "this month" }[period];
+  const trendSub = { Day: "today 24h", Week: "this week", Month: "this month" }[period];
 
   return (
     <div style={{

@@ -89,7 +89,7 @@ pub fn build_dashboard() -> Dashboard {
     let today = now.date_naive();
 
     let mut day = report_day(&events, now);
-    let mut week = report_range(&events, now, 7, "Week");
+    let mut week = report_week(&events, now);
     let mut month = report_month(&events, now);
     let heatmap = build_heatmap(&events, today);
 
@@ -324,21 +324,23 @@ fn report_day(events: &[Event], now: DateTime<Local>) -> PeriodReport {
     }
 }
 
-// ── Week/Month report: last N days, daily buckets ───────────────────
-fn report_range(events: &[Event], now: DateTime<Local>, days: i64, kind: &str) -> PeriodReport {
+// ── Week report: current calendar week (Mon-Sun) vs previous week ────
+fn report_week(events: &[Event], now: DateTime<Local>) -> PeriodReport {
     let today = now.date_naive();
-    let start = today - Duration::days(days - 1);
-    let prev_start = start - Duration::days(days);
+    // Monday of the current week (Mon=0 … Sun=6).
+    let start = today - Duration::days(today.weekday().num_days_from_monday() as i64);
+    let next_start = start + Duration::days(7);
+    let prev_start = start - Duration::days(7);
 
     let mut agg = Agg::default();
     let mut prev = Agg::default();
-    let mut buckets = vec![(0.0f64, 0.0f64, 0.0f64); days as usize];
-    let mut req_b = vec![0.0f64; days as usize];
-    let mut cost_b = vec![0.0f64; days as usize];
+    let mut buckets = vec![(0.0f64, 0.0f64, 0.0f64); 7];
+    let mut req_b = vec![0.0f64; 7];
+    let mut cost_b = vec![0.0f64; 7];
 
     for e in events {
         let d = e.ts.date_naive();
-        if d >= start && d <= today {
+        if d >= start && d < next_start {
             agg.add(e);
             let idx = (d - start).num_days() as usize;
             if idx < buckets.len() {
@@ -354,22 +356,12 @@ fn report_range(events: &[Event], now: DateTime<Local>, days: i64, kind: &str) -
     }
 
     let weekday = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-    let series = (0..days as usize)
+    let series = (0..7usize)
         .map(|i| {
             let date = start + Duration::days(i as i64);
-            let wd = weekday[date.weekday().num_days_from_monday() as usize];
-            let label = if kind == "Week" {
-                wd.to_string()
-            } else {
-                let dn = date.day();
-                if i == 0 || dn % 5 == 0 {
-                    dn.to_string()
-                } else {
-                    String::new()
-                }
-            };
+            let wd = weekday[i];
             SeriesPoint {
-                label,
+                label: wd.to_string(),
                 full: format!("{} {} {}", wd, MONTHS[(date.month() - 1) as usize], date.day()),
                 input: buckets[i].0,
                 cache: buckets[i].1,
