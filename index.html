@@ -7,6 +7,15 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
+    <style>
+      /* Mouse-driven menu-bar popover: WKWebView draws an accent focus ring on
+         whatever control gets focus when the panel opens (e.g. the theme
+         toggle). It's noise here, so suppress focus rings app-wide. */
+      *:focus,
+      *:focus-visible {
+        outline: none !important;
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>
