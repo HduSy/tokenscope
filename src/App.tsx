@@ -55,7 +55,26 @@ function Delta({ v, theme }: { v: number; theme: Theme }) {
   );
 }
 
-function ModelRow({ m, max, theme, total }: { m: ModelStat; max: number; theme: Theme; total: number }) {
+// Round each value's share to 1 decimal (%) via largest-remainder apportionment,
+// so the displayed percentages sum to exactly 100.0% (plain rounding wouldn't).
+function sharePcts(values: number[]): number[] {
+  const total = values.reduce((s, v) => s + v, 0);
+  if (total <= 0) return values.map(() => 0);
+  const UNITS = 1000; // work in 0.1% units; target is 100.0%
+  const raw = values.map((v) => (v / total) * UNITS);
+  const units = raw.map(Math.floor);
+  const left = Math.round(UNITS - units.reduce((s, f) => s + f, 0));
+  raw
+    .map((r, i) => ({ i, frac: r - Math.floor(r) }))
+    .sort((a, b) => b.frac - a.frac)
+    .slice(0, left)
+    .forEach(({ i }) => (units[i] += 1));
+  return units.map((u) => u / 10);
+}
+
+function ModelRow({ m, max, theme, share }: { m: ModelStat; max: number; theme: Theme; share: number }) {
+  // 1-decimal share; whole numbers drop the ".0" (100% not 100.0%).
+  const pctStr = share % 1 === 0 ? share.toFixed(0) : share.toFixed(1);
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "5px 0" }}>
       <span style={{ width: 7, height: 7, borderRadius: 2, background: m.color, flex: "0 0 auto" }} />
@@ -66,7 +85,7 @@ function ModelRow({ m, max, theme, total }: { m: ModelStat; max: number; theme: 
         <div style={{ width: `${(m.tokens / max) * 100}%`, height: "100%", background: m.color, borderRadius: 3 }} />
       </div>
       <span style={{ font: `500 10.5px ${theme.mono}`, color: theme.dim, flex: "0 0 auto", width: 42, textAlign: "right" }}>{fmtTokens(m.tokens)}</span>
-      <span style={{ font: `600 10.5px ${theme.mono}`, color: theme.text, flex: "0 0 auto", width: 30, textAlign: "right" }}>{pct(m.tokens, total)}%</span>
+      <span style={{ font: `600 10.5px ${theme.mono}`, color: theme.text, flex: "0 0 auto", width: 40, textAlign: "right" }}>{pctStr}%</span>
     </div>
   );
 }
@@ -149,11 +168,18 @@ function Panel({ dash, dark, onToggleTheme, openGen, active }: { dash: Dashboard
   const animTotal = useCountUp(M.totalTokens, `${period}:${openGen}`, active);
   const models = P.models;
   // Hide noise: 0% token-share rows, and $0 entries in the cost donut.
-  const tokenModels = models.filter((m) => pct(m.tokens, M.totalTokens || 1) > 0);
+  // Show models whose share is at least 0.1% when rounded to 1 decimal; below
+  // that it'd render a meaningless "0.0%" (a negligible token share). Such a
+  // model can still appear under Cost if it has a non-zero cost.
+  const tokenModels = models.filter(
+    (m) => Math.round((m.tokens / (M.totalTokens || 1)) * 1000) / 10 >= 0.1
+  );
   const costModels = models.filter((m) => m.cost > 0);
   // models that were used but have no LiteLLM pricing (cost unknown, not $0)
   const unpricedModels = models.filter((m) => !m.priced && m.tokens > 0);
   const maxM = Math.max(...tokenModels.map((m) => m.tokens), 1e-9);
+  // Per-row shares that sum to exactly 100.0% (largest-remainder over visible rows).
+  const tokenShares = sharePcts(tokenModels.map((m) => m.tokens));
   const trendSub = { Day: "today 24h", Week: "this week", Month: "this month" }[period];
 
   return (
@@ -216,7 +242,7 @@ function Panel({ dash, dark, onToggleTheme, openGen, active }: { dash: Dashboard
         {/* models */}
         <div style={{ marginBottom: 4 }}><Label t={t}>Tokens by model</Label></div>
         {tokenModels.length === 0 && <div style={{ font: `500 10.5px ${t.mono}`, color: t.faint, padding: "4px 0" }}>No usage in this period</div>}
-        {tokenModels.map((m, i) => <ModelRow key={i} m={m} max={maxM} theme={t} total={M.totalTokens || 1} />)}
+        {tokenModels.map((m, i) => <ModelRow key={i} m={m} max={maxM} theme={t} share={tokenShares[i]} />)}
         <SectionRule t={t} m="10px 0 10px" />
         {/* cost donut */}
         <div style={{ marginBottom: 8 }}><Label t={t}>Cost by model</Label></div>

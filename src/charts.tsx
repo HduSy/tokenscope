@@ -137,7 +137,9 @@ export function CostDonut({ models, theme, size = 104, thickness = 16 }:
   const total = models.reduce((s, m) => s + m.cost, 0) || 1e-9;
   const cx = size / 2, cy = size / 2;
   const rOut = (size - 2) / 2, rIn = rOut - thickness;
-  const gap = 0.045;
+  // Inter-segment gap, only meaningful when there's more than one wedge to
+  // separate. A single segment is drawn as a closed ring (see render below).
+  const gap = models.length > 1 ? 0.045 : 0;
   let a = -Math.PI / 2;
   const arc = (a0: number, a1: number, rO: number, rI: number) => {
     const large = a1 - a0 > Math.PI ? 1 : 0;
@@ -163,12 +165,25 @@ export function CostDonut({ models, theme, size = 104, thickness = 16 }:
     <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
       <div style={{ position: "relative", width: size, height: size, flex: "0 0 auto" }}>
         <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{ overflow: "visible" }}>
-          {wedges.map((w) => (
-            <path key={w.i} d={w.d} fill={w.m.color}
-              opacity={hi === -1 || hi === w.i ? 1 : 0.32}
-              onMouseEnter={() => setHi(w.i)} onMouseLeave={() => setHi(-1)}
-              style={{ transition: "opacity .14s", cursor: "default" }} />
-          ))}
+          {models.length === 1 ? (
+            // Single model: a full closed ring (one 360° arc would be
+            // degenerate, and the inter-segment gap would leave it open). Trace
+            // both edges with a 1px card-coloured stroke for a crisp inset look,
+            // matching the gapped multi-wedge donut.
+            <g onMouseEnter={() => setHi(0)} onMouseLeave={() => setHi(-1)} style={{ cursor: "default" }}>
+              <circle cx={cx} cy={cy} r={(rOut + rIn) / 2}
+                fill="none" stroke={models[0].color} strokeWidth={thickness} />
+              <circle cx={cx} cy={cy} r={rOut} fill="none" stroke={t.card} strokeWidth={1} />
+              <circle cx={cx} cy={cy} r={rIn} fill="none" stroke={t.card} strokeWidth={1} />
+            </g>
+          ) : (
+            wedges.map((w) => (
+              <path key={w.i} d={w.d} fill={w.m.color}
+                opacity={hi === -1 || hi === w.i ? 1 : 0.32}
+                onMouseEnter={() => setHi(w.i)} onMouseLeave={() => setHi(-1)}
+                style={{ transition: "opacity .14s", cursor: "default" }} />
+            ))
+          )}
         </svg>
         <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
           <span style={{ font: `600 ${fit.toFixed(1)}px ${t.mono}`, color: cur ? cur.color : t.text, lineHeight: 1, letterSpacing: "-.01em" }}>{txt}</span>
