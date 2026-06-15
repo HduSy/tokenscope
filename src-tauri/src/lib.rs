@@ -45,36 +45,104 @@ fn refresh(app: &tauri::AppHandle) {
     let _ = app.emit("dashboard-updated", &dash);
 }
 
-/// 100M-token celebration state. `floors` holds the last-seen ⌊total/100M⌋ for
-/// (week, month); `None` until the first observation baselines it (so we never
-/// fire retroactively for usage that already happened before launch). `active`
-/// guards against overlapping celebrations.
+/// Persisted 100M-token milestone snapshot. Stored in the app *data* dir so it
+/// survives app restarts, reboots, and updates (which only replace the .app
+/// bundle, never the data dir). The per-period ids let us tell a real crossing
+/// from a period reset.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct MilestoneState {
+    week_id: String,
+    week_floor: i64,
+    month_id: String,
+    month_floor: i64,
+}
+
+/// 100M-token celebration tracking. `state` is the last persisted snapshot
+/// (`None` only before the very first observation ever, so the first run
+/// baselines without celebrating pre-existing usage). `active` guards against
+/// overlapping celebrations.
 struct Celebration {
-    floors: std::sync::Mutex<Option<(i64, i64)>>,
+    state: std::sync::Mutex<Option<MilestoneState>>,
     active: AtomicBool,
 }
 
-/// Fire one full-screen celebration whenever the week OR month total crosses a
-/// new 100M-token boundary. We watch only week ∪ month, not day: today is always
-/// within both the current week and month, so a day crossing is already implied
-/// by the month — but a calendar week can straddle a month boundary, so early in
-/// a month the week total can lead the (freshly reset) month, hence both.
-/// Dedup is inherent: a single chunk of usage advancing both floors at once
-/// still calls celebrate() once.
+/// `~/Library/Application Support/tokenscope/milestones.json` (platform
+/// equivalent elsewhere). Deliberately the data dir, not the Caches dir the
+/// event store uses — Caches can be purged by the OS, milestones must not be.
+fn milestones_path() -> Option<std::path::PathBuf> {
+    let dir = dirs::data_dir()?.join("tokenscope");
+    let _ = std::fs::create_dir_all(&dir);
+    Some(dir.join("milestones.json"))
+}
+
+fn load_milestones() -> Option<MilestoneState> {
+    let t = std::fs::read_to_string(milestones_path()?).ok()?;
+    serde_json::from_str(&t).ok()
+}
+
+fn save_milestones(m: &MilestoneState) {
+    if let Some(p) = milestones_path() {
+        if let Ok(t) = serde_json::to_string(m) {
+            let _ = std::fs::write(p, t);
+        }
+    }
+}
+
+/// Current calendar-week and calendar-month identifiers, matching parser.rs's
+/// period definitions (Monday-based week, calendar month), so a stored floor is
+/// only ever compared within the same period.
+fn period_ids() -> (String, String) {
+    use chrono::Datelike;
+    let d = chrono::Local::now().date_naive();
+    let iso = d.iso_week();
+    (
+        format!("{}-W{:02}", iso.year(), iso.week()),
+        format!("{}-{:02}", d.year(), d.month()),
+    )
+}
+
+/// Decide whether to celebrate: fire if either period advanced to a higher
+/// 100M floor *within the same period*. `None` (first ever observation) never
+/// fires. A period-id mismatch means that period reset, so it re-baselines
+/// silently rather than comparing floors. Returns a single bool, so a jump
+/// across several boundaries — or week and month advancing together — is one
+/// celebration.
+fn milestone_fire(prev: Option<&MilestoneState>, cur: &MilestoneState) -> bool {
+    match prev {
+        None => false,
+        Some(p) => {
+            (p.week_id == cur.week_id && cur.week_floor > p.week_floor)
+                || (p.month_id == cur.month_id && cur.month_floor > p.month_floor)
+        }
+    }
+}
+
+/// Observe the latest totals, persist the snapshot, and celebrate on a new
+/// 100M-token milestone. We watch week ∪ month, not day: today is always within
+/// both the current week and month, so a day crossing is already implied by the
+/// month — but a calendar week can straddle a month boundary, so early in a
+/// month the week total can lead the (freshly reset) month, hence both. Because
+/// the snapshot is persisted, a crossing that happened while the app wasn't
+/// running (it reads the logs Claude writes regardless) still catches up on the
+/// next observation.
 fn check_milestones(app: &tauri::AppHandle, dash: &Dashboard) {
     let Some(state) = app.try_state::<Celebration>() else {
         return;
     };
     // total_tokens is already in millions, so a 100M milestone is total / 100.
-    let wf = (dash.week.metrics.total_tokens / 100.0).floor() as i64;
-    let mf = (dash.month.metrics.total_tokens / 100.0).floor() as i64;
-    let mut g = state.floors.lock().unwrap();
-    let fire = match *g {
-        None => false, // first observation: baseline only, never celebrate
-        Some((pw, pm)) => wf > pw || mf > pm,
+    let (week_id, month_id) = period_ids();
+    let cur = MilestoneState {
+        week_id,
+        week_floor: (dash.week.metrics.total_tokens / 100.0).floor() as i64,
+        month_id,
+        month_floor: (dash.month.metrics.total_tokens / 100.0).floor() as i64,
     };
-    *g = Some((wf, mf)); // always update (also walks the baseline back down on a period reset)
+
+    let mut g = state.state.lock().unwrap();
+    let fire = milestone_fire(g.as_ref(), &cur);
+    *g = Some(cur.clone());
     drop(g);
+    save_milestones(&cur);
     if fire {
         celebrate(app);
     }
@@ -404,9 +472,11 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.manage(TrayAnchor(std::sync::Mutex::new(None)));
 
-            // 100M-token celebration tracking (baselined on first observation).
+            // 100M-token celebration tracking. Load the persisted snapshot so
+            // milestones survive restarts/reboots/updates; the first run ever
+            // (no file) baselines on first observation without celebrating.
             app.manage(Celebration {
-                floors: std::sync::Mutex::new(None),
+                state: std::sync::Mutex::new(load_milestones()),
                 active: AtomicBool::new(false),
             });
 
@@ -565,4 +635,65 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ms(wk: &str, wf: i64, mo: &str, mf: i64) -> MilestoneState {
+        MilestoneState {
+            week_id: wk.into(),
+            week_floor: wf,
+            month_id: mo.into(),
+            month_floor: mf,
+        }
+    }
+
+    #[test]
+    fn first_ever_observation_baselines_without_firing() {
+        // No prior snapshot → never celebrate pre-existing usage on first run.
+        assert!(!milestone_fire(None, &ms("2026-W24", 3, "2026-06", 3)));
+    }
+
+    #[test]
+    fn no_change_does_not_fire() {
+        let prev = ms("2026-W24", 1, "2026-06", 3);
+        assert!(!milestone_fire(Some(&prev), &ms("2026-W24", 1, "2026-06", 3)));
+    }
+
+    #[test]
+    fn month_crossing_fires() {
+        let prev = ms("2026-W24", 1, "2026-06", 3);
+        assert!(milestone_fire(Some(&prev), &ms("2026-W24", 1, "2026-06", 4)));
+    }
+
+    #[test]
+    fn week_crossing_fires_even_when_month_flat() {
+        // Early in a month the week (straddling from the previous month) can lead.
+        let prev = ms("2026-W24", 0, "2026-06", 0);
+        assert!(milestone_fire(Some(&prev), &ms("2026-W24", 1, "2026-06", 0)));
+    }
+
+    #[test]
+    fn multi_boundary_jump_is_a_single_fire() {
+        // 3 → 7 is still one celebration (fire is a bool, not a count).
+        let prev = ms("2026-W24", 1, "2026-06", 3);
+        assert!(milestone_fire(Some(&prev), &ms("2026-W24", 1, "2026-06", 7)));
+    }
+
+    #[test]
+    fn new_month_rebaselines_silently() {
+        // Period id changed → that period reset; re-baseline, don't compare floors
+        // (so a new month opening below last month's floor never fires).
+        let prev = ms("2026-W24", 1, "2026-06", 3);
+        assert!(!milestone_fire(Some(&prev), &ms("2026-W27", 0, "2026-07", 0)));
+    }
+
+    #[test]
+    fn new_week_does_not_fire_on_reset() {
+        let prev = ms("2026-W24", 2, "2026-06", 3);
+        // New week (id changed), month unchanged and flat → no fire.
+        assert!(!milestone_fire(Some(&prev), &ms("2026-W25", 0, "2026-06", 3)));
+    }
 }
