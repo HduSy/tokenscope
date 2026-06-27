@@ -1,6 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { invoke } from "@tauri-apps/api/core";
+import { domToPng } from "modern-screenshot";
 import {
   Dashboard, PeriodReport, ModelStat, Theme, TH,
   fetchDashboard, fmtInt, fmtTokens, pct,
@@ -158,6 +160,28 @@ function ThemeToggle({ dark, theme, onToggle }: { dark: boolean; theme: Theme; o
   );
 }
 
+function ScreenshotButton({ theme, busy, onClick }: { theme: Theme; busy: boolean; onClick: () => void }) {
+  const t = theme;
+  return (
+    <button onClick={onClick} disabled={busy} title="Save screenshot to Desktop" aria-label="save screenshot" style={{
+      display: "inline-flex", alignItems: "center", justifyContent: "center",
+      width: 26, height: 26, borderRadius: 7, cursor: busy ? "default" : "pointer", padding: 0,
+      background: t.segBg, border: `1px solid ${t.segBorder}`, color: t.dim,
+    }}>
+      {busy ? (
+        <svg className="om-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={t.dim} strokeWidth="2.6" strokeLinecap="round">
+          <path d="M12 3a9 9 0 1 0 9 9" />
+        </svg>
+      ) : (
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={t.dim} strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M3 8.5A2.5 2.5 0 0 1 5.5 6h1.7l1.1-1.6A1.5 1.5 0 0 1 9.5 4h5a1.5 1.5 0 0 1 1.2.4L16.8 6h1.7A2.5 2.5 0 0 1 21 8.5v8A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5z" />
+          <circle cx="12" cy="12.2" r="3.4" />
+        </svg>
+      )}
+    </button>
+  );
+}
+
 function Panel({ dash, dark, onToggleTheme, openGen, active }: { dash: Dashboard; dark: boolean; onToggleTheme: () => void; openGen: number; active: boolean }) {
   const t = TH[dark ? "dark" : "light"];
   const [period, setPeriod] = useState<"Day" | "Week" | "Month">("Week");
@@ -182,9 +206,56 @@ function Panel({ dash, dark, onToggleTheme, openGen, active }: { dash: Dashboard
   const tokenShares = sharePcts(tokenModels.map((m) => m.tokens));
   const trendSub = { Day: "today 24h", Week: "this week", Month: "this month" }[period];
 
+  // screenshot capture: rasterize the full panel card to a PNG and hand it to
+  // the Rust `save_screenshot` command (browser preview falls back to a download).
+  const [shotBusy, setShotBusy] = useState(false);
+  const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
+  const toastTimer = useRef<number | null>(null);
+  const showToast = (msg: string, ok: boolean) => {
+    if (toastTimer.current) window.clearTimeout(toastTimer.current);
+    setToast({ msg, ok });
+    toastTimer.current = window.setTimeout(() => setToast(null), 1800);
+  };
+  const captureScreenshot = async () => {
+    if (shotBusy) return;
+    const el = document.querySelector<HTMLElement>(".om-scroll");
+    if (!el) { showToast("Nothing to capture", false); return; }
+    setShotBusy(true);
+    try {
+      // explicit width/height = full scrollable content, not just the viewport;
+      // filter drops the capture button itself (and its in-flight spinner) so
+      // the saved image is a clean dashboard, not a shot of the button.
+      const dataUrl = await domToPng(el, {
+        scale: 2,
+        backgroundColor: dark ? "#1f2226" : "#ffffff",
+        width: el.scrollWidth,
+        height: el.scrollHeight,
+        filter: (n) => !(n instanceof HTMLElement && n.getAttribute("aria-label") === "save screenshot"),
+      });
+      const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+      if (inTauri) {
+        await invoke<string>("save_screenshot", { dataUrl });
+        showToast("Saved to Desktop", true);
+      } else {
+        const a = document.createElement("a");
+        a.href = dataUrl;
+        a.download = "tokenscope.png";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        showToast("Downloaded", true);
+      }
+    } catch {
+      showToast("Screenshot failed", false);
+    } finally {
+      setShotBusy(false);
+    }
+  };
+
   return (
     <div style={{
       width: "100%", height: "100vh", overflow: "hidden", boxSizing: "border-box",
+      position: "relative",
       background: "transparent", padding: 0,
       fontFamily: t.ui,
     }}>
@@ -209,6 +280,7 @@ function Panel({ dash, dark, onToggleTheme, openGen, active }: { dash: Dashboard
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <Segmented value={period} theme={t} onSelect={(v) => setPeriod(v as any)} />
             <ThemeToggle dark={dark} theme={t} onToggle={onToggleTheme} />
+            <ScreenshotButton theme={t} busy={shotBusy} onClick={captureScreenshot} />
           </div>
         </div>
         {/* scrolling body */}
@@ -301,6 +373,18 @@ function Panel({ dash, dark, onToggleTheme, openGen, active }: { dash: Dashboard
         </div>
         </div>{/* /scrolling body */}
       </div>
+      {toast && (
+        <div className="om-toast" style={{
+          position: "absolute", top: 58, left: "50%", transform: "translateX(-50%)",
+          zIndex: 20, whiteSpace: "nowrap", pointerEvents: "none",
+          font: `600 12px ${t.mono}`, color: "#fff",
+          background: toast.ok ? t.accent : "#e0795f",
+          padding: "7px 13px", borderRadius: 9,
+          boxShadow: "0 8px 22px rgba(0,0,0,0.34)",
+        }}>
+          {toast.msg}
+        </div>
+      )}
     </div>
   );
 }

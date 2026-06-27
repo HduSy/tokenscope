@@ -15,6 +15,22 @@
       *:focus-visible {
         outline: none !important;
       }
+      /* Spinner shown on the screenshot button while a capture is in flight. */
+      @keyframes om-spin {
+        to { transform: rotate(360deg); }
+      }
+      .om-spin {
+        animation: om-spin 0.7s linear infinite;
+        transform-origin: 50% 50%;
+      }
+      /* Screenshot save/fail toast — fades in at the top of the panel. */
+      @keyframes om-toast-in {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+      .om-toast {
+        animation: om-toast-in 0.18s ease-out;
+      }
     </style>
   </head>
   <body>

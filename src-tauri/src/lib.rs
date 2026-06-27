@@ -415,6 +415,29 @@ fn get_dashboard(app: tauri::AppHandle) -> Dashboard {
     dash
 }
 
+/// Save a full-panel screenshot (a `data:image/png;base64,...` URL captured in
+/// the webview) to the user's Desktop as `Tokenscope <date> at <time>.png`.
+/// DOM rasterization sidesteps macOS Screen Recording permission entirely.
+/// Returns the written file path on success.
+#[tauri::command]
+fn save_screenshot(data_url: String) -> Result<String, String> {
+    use base64::Engine;
+    let body = data_url
+        .strip_prefix("data:image/png;base64,")
+        .ok_or_else(|| "expected a data:image/png;base64,... URL".to_string())?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(body.trim())
+        .map_err(|e| format!("invalid base64: {e}"))?;
+
+    let dir = dirs::desktop_dir()
+        .ok_or_else(|| "could not resolve the Desktop directory".to_string())?;
+    let stamp = chrono::Local::now().format("Tokenscope %Y-%m-%d at %H.%M.%S.png");
+    let path = dir.join(stamp.to_string());
+
+    std::fs::write(&path, &bytes).map_err(|e| format!("failed to write file: {e}"))?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
 /// For CLI/example validation against real logs.
 pub fn dashboard_json() -> String {
     serde_json::to_string_pretty(&parser::build_dashboard()).unwrap_or_default()
@@ -462,7 +485,7 @@ pub fn run() {
     }
 
     builder
-        .invoke_handler(tauri::generate_handler![get_dashboard])
+        .invoke_handler(tauri::generate_handler![get_dashboard, save_screenshot])
         .setup(move |app| {
             // Menu-bar–only app: no Dock icon, runs in the background.
             #[cfg(target_os = "macos")]
