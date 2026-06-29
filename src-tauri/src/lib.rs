@@ -39,7 +39,13 @@ fn now_ms() -> i64 {
 fn refresh(app: &tauri::AppHandle) {
     let dash = parser::build_dashboard();
     if let Some(tray) = app.tray_by_id("main") {
-        let _ = tray.set_title(Some(fmt_tokens_m(dash.today_tokens)));
+        let label = fmt_tokens_m(dash.today_tokens);
+        // macOS shows the label next to the menu-bar icon (set_title). Windows'
+        // taskbar tray has no equivalent — set_title is a no-op there — so we
+        // surface the same number through the hover tooltip instead, the only
+        // text channel Shell_NotifyIcon exposes for a tray icon.
+        let _ = tray.set_title(Some(label.clone()));
+        let _ = tray.set_tooltip(Some(format!("Tokenscope · today {}", label)));
     }
     check_milestones(app, &dash);
     let _ = app.emit("dashboard-updated", &dash);
@@ -175,6 +181,9 @@ fn show_celebration(app: &tauri::AppHandle) {
         }
     };
 
+    // Whether the confetti window was reused or freshly built — only used on
+    // macOS to decide whether to (re-)apply the NSPanel attributes.
+    #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
     let existed = app.get_webview_window("confetti").is_some();
     let win = match app.get_webview_window("confetti") {
         Some(w) => w,
@@ -391,7 +400,15 @@ fn show_popover(app: &tauri::AppHandle) {
     }
     #[cfg(not(target_os = "macos"))]
     if let Some(w) = app.get_webview_window("main") {
-        let _ = w.move_window(Position::TrayBottomCenter);
+        // BottomRight (= window right-bottom aligned to the work area's
+        // right-bottom corner, above the taskbar) is the right anchor on
+        // Windows/Linux: the tray sits at the bottom of the screen, so
+        // TrayBottomCenter ("below the tray") would push 610px of the panel
+        // off-screen. BottomRight matches the Windows convention (Steam,
+        // Discord, qq notifications all open here) and works regardless of
+        // taskbar position because move_window uses the work area, not the
+        // raw screen rect.
+        let _ = w.move_window(Position::BottomRight);
         let _ = w.show();
         let _ = w.set_focus();
     }
@@ -409,7 +426,11 @@ fn get_dashboard(app: tauri::AppHandle) -> Dashboard {
     // instant it opens, while the tray otherwise only refreshes every 30s — so
     // without this the two could disagree for up to 30s during heavy usage.
     if let Some(tray) = app.tray_by_id("main") {
-        let _ = tray.set_title(Some(fmt_tokens_m(dash.today_tokens)));
+        let label = fmt_tokens_m(dash.today_tokens);
+        let _ = tray.set_title(Some(label.clone()));
+        // Mirror refresh(): keep the tooltip in sync for Windows, where the
+        // title isn't shown next to the icon.
+        let _ = tray.set_tooltip(Some(format!("Tokenscope · today {}", label)));
     }
     check_milestones(&app, &dash);
     dash
@@ -585,7 +606,7 @@ pub fn run() {
                 .icon(tauri::include_image!("icons/tray-icon.png"))
                 .icon_as_template(false)
                 .title(&label)
-                .tooltip("Tokenscope · today's token usage")
+                .tooltip(format!("Tokenscope · today {}", label))
                 .menu(&menu)
                 .show_menu_on_left_click(false) // left = toggle panel, right = menu
                 .on_tray_icon_event(move |tray, event| {
