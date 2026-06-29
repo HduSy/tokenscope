@@ -408,22 +408,29 @@ export default function App() {
     });
 
   useEffect(() => {
+    // Apply fresh data AND clear any stale error: a transient initial-load
+    // failure must not pin the error page for the whole session — the next
+    // successful fetch (focus refetch or the 30s background push) recovers it.
+    const apply = (d: Dashboard) => {
+      setDash(d);
+      setErr(null);
+    };
     // initial load (shows the Loading state only until the first data arrives)
-    fetchDashboard().then(setDash).catch((e) => setErr(String(e)));
+    fetchDashboard().then(apply).catch((e) => setErr(String(e)));
 
     const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
     if (!inTauri) return;
     const unlisten: Array<() => void> = [];
-    // live updates pushed from the background refresh thread — setDash swaps the
-    // data in place (no Loading), so values update without any flicker.
-    listen<Dashboard>("dashboard-updated", (e) => setDash(e.payload)).then((u) => unlisten.push(u));
+    // live updates pushed from the background refresh thread — swaps the data in
+    // place (no Loading), so values update without any flicker.
+    listen<Dashboard>("dashboard-updated", (e) => apply(e.payload)).then((u) => unlisten.push(u));
     // refetch the instant the popover gains focus (i.e. is opened)
     getCurrentWindow()
       .onFocusChanged(({ payload: focused }) => {
         setFocused(focused);
         if (focused) {
           setOpenGen((g) => g + 1); // re-run the count-up on each open
-          fetchDashboard().then(setDash).catch(() => {});
+          fetchDashboard().then(apply).catch(() => {});
         }
       })
       .then((u) => unlisten.push(u));
