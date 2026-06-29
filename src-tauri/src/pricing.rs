@@ -6,7 +6,13 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{Arc, OnceLock, RwLock};
 use std::time::{Duration, SystemTime};
+
+// Process-wide memoized price table. Loaded once off the main thread (see
+// reload_shared) and refreshed every 24h, so build_dashboard — which holds
+// BUILD_LOCK — only ever does a cheap Arc clone, never JSON parsing or network.
+static PRICING: OnceLock<RwLock<Arc<Pricing>>> = OnceLock::new();
 
 const MODELSDEV_URL: &str = "https://models.dev/api.json";
 const LITELLM_URL: &str =
@@ -96,6 +102,47 @@ impl Pricing {
         // 3. built-in backstop (offline first run)
         p.ingest_builtin();
         p
+    }
+
+    /// Just the built-in snapshot — no disk, no network. Returned by `shared()`
+    /// before the background loader has run, so the common Claude models still
+    /// price during the first moments after launch.
+    fn builtin_only() -> Self {
+        let mut p = Pricing {
+            exact: HashMap::new(),
+            norm: HashMap::new(),
+        };
+        p.ingest_builtin();
+        p
+    }
+
+    /// The process-wide memoized price table (cheap Arc clone). Never blocks on
+    /// disk/network — until `reload_shared` has populated the cell it returns the
+    /// built-in snapshot, so callers holding BUILD_LOCK are never stalled.
+    pub fn shared() -> Arc<Pricing> {
+        if let Some(lock) = PRICING.get() {
+            if let Ok(g) = lock.read() {
+                return g.clone();
+            }
+        }
+        Arc::new(Pricing::builtin_only())
+    }
+
+    /// Load the full table (cache read + network on cold/stale cache) and swap it
+    /// into the shared cell. MUST run on a background thread — never the main
+    /// thread or a BUILD_LOCK holder — since the fetch can block up to ~20s.
+    pub fn reload_shared() {
+        let p = Arc::new(Pricing::load());
+        match PRICING.get() {
+            Some(lock) => {
+                if let Ok(mut g) = lock.write() {
+                    *g = p;
+                }
+            }
+            None => {
+                let _ = PRICING.set(RwLock::new(p));
+            }
+        }
     }
 
     fn insert(&mut self, id: &str, price: ModelPrice) {

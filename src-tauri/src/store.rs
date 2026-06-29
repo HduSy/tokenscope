@@ -27,6 +27,10 @@ pub struct RawEvent {
     pub mcp: Vec<String>,    // all mcp__<server> names called (unfiltered)
     pub skills: Vec<String>, // all Skill input.skill ids called (unfiltered)
     pub id: String,          // message id (dedup)
+    // Source log file (manifest key). Lets a truncated/rewritten file purge its
+    // own stale events before being re-read, so re-ingestion stays idempotent.
+    #[serde(default)]
+    pub source: String,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -51,7 +55,17 @@ pub struct Store {
 //   v2: count slash-command skill invocations (`/skill`), not just Skill tool_use.
 //   v3: merge tool_use across lines sharing a message id (a thinking line + a
 //       tool_use line were deduped, dropping the tool call).
-const STORE_VERSION: u32 = 3;
+//   v4: track a per-event source file (idempotent re-read of truncated logs).
+const STORE_VERSION: u32 = 4;
+
+/// Atomically replace `path`'s contents: write a sibling temp file, then rename
+/// over the target (same-volume rename is atomic on Windows and Unix). Avoids
+/// the half-written/truncated JSON that a crash mid-`fs::write` would leave.
+fn write_atomic(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, data)?;
+    fs::rename(&tmp, path)
+}
 
 fn projects_dir() -> Option<PathBuf> {
     Some(dirs::home_dir()?.join(".claude").join("projects"))
@@ -76,16 +90,23 @@ impl Store {
                 .and_then(|s| s.trim().parse::<u32>().ok())
                 == Some(STORE_VERSION);
             if version_ok {
-            if let Ok(t) = fs::read_to_string(dir.join("events.json")) {
-                if let Ok(v) = serde_json::from_str::<Vec<RawEvent>>(&t) {
-                    events = v;
-                }
-            }
-            if let Ok(t) = fs::read_to_string(dir.join("offsets.json")) {
-                if let Ok(m) = serde_json::from_str::<Manifest>(&t) {
+                // events.json and offsets.json are ONE consistent unit: the
+                // manifest's per-file byte offsets are only meaningful relative
+                // to the events we actually loaded. If either is missing or fails
+                // to parse (e.g. a crash left events.json half-written), discard
+                // BOTH and fall back to a full rescan — otherwise a good manifest
+                // paired with empty/corrupt events would make ingest() skip every
+                // already-recorded file and silently lose all history.
+                let loaded_events = fs::read_to_string(dir.join("events.json"))
+                    .ok()
+                    .and_then(|t| serde_json::from_str::<Vec<RawEvent>>(&t).ok());
+                let loaded_manifest = fs::read_to_string(dir.join("offsets.json"))
+                    .ok()
+                    .and_then(|t| serde_json::from_str::<Manifest>(&t).ok());
+                if let (Some(e), Some(m)) = (loaded_events, loaded_manifest) {
+                    events = e;
                     manifest = m;
                 }
-            }
             }
         }
         let index = events
@@ -103,22 +124,63 @@ impl Store {
 
     pub fn save(&self) {
         if let Some(dir) = cache_dir() {
+            // Atomic writes so a crash/kill mid-save can't leave a half-written
+            // events.json (load() would then discard the pair and lose history).
+            // Write events before offsets: if we crash between them, the manifest
+            // is merely stale (points at fewer bytes → re-reads a little) rather
+            // than ahead of the events on disk.
             if let Ok(t) = serde_json::to_string(&self.events) {
-                let _ = fs::write(dir.join("events.json"), t);
+                let _ = write_atomic(&dir.join("events.json"), t.as_bytes());
             }
             if let Ok(t) = serde_json::to_string(&self.manifest) {
-                let _ = fs::write(dir.join("offsets.json"), t);
+                let _ = write_atomic(&dir.join("offsets.json"), t.as_bytes());
             }
-            let _ = fs::write(dir.join("version"), STORE_VERSION.to_string());
+            let _ = write_atomic(&dir.join("version"), STORE_VERSION.to_string().as_bytes());
         }
     }
 
-    /// Incrementally read only the new bytes of new/changed JSONL files.
-    /// Returns the number of newly-appended events.
-    pub fn ingest(&mut self) -> usize {
+    /// Rebuild the id→index map after the `events` vector is mutated wholesale
+    /// (purge/prune shift positions, so partial updates aren't enough).
+    fn rebuild_index(&mut self) {
+        self.index = self
+            .events
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| !e.id.is_empty())
+            .map(|(i, e)| (e.id.clone(), i))
+            .collect();
+    }
+
+    /// Drop every event that came from `key`, then rebuild the index. Used before
+    /// re-reading a truncated/rewritten file so re-ingestion is idempotent
+    /// (otherwise the cross-line tool_use merge re-appends calls and id-less
+    /// events get pushed twice, inflating MCP/Skill counts and token totals).
+    fn purge_source(&mut self, key: &str) {
+        self.events.retain(|e| e.source != key);
+        self.rebuild_index();
+    }
+
+    /// Drop events older than `cutoff_ms`. The reports/heatmap only span the last
+    /// ~26 weeks, so anything older is dead weight that grows events.json without
+    /// bound. Returns whether anything was removed. Old logs already at EOF are
+    /// never re-read, so their pruned events don't reappear.
+    pub fn prune_before(&mut self, cutoff_ms: i64) -> bool {
         let before = self.events.len();
+        self.events.retain(|e| e.ts_ms >= cutoff_ms);
+        let removed = self.events.len() != before;
+        if removed {
+            self.rebuild_index();
+        }
+        removed
+    }
+
+    /// Incrementally read only the new bytes of new/changed JSONL files.
+    /// Returns whether anything changed (new events or an updated file offset),
+    /// so the caller can skip a full cache rewrite when nothing moved.
+    pub fn ingest(&mut self) -> bool {
+        let mut dirty = false;
         let Some(root) = projects_dir() else {
-            return 0;
+            return false;
         };
         for entry in WalkDir::new(&root)
             .into_iter()
@@ -142,7 +204,11 @@ impl Store {
                         continue; // unchanged → skip
                     }
                     if size < poff {
-                        0 // truncated / rewritten → re-read (dedup protects us)
+                        // truncated / rewritten (e.g. log compaction): the bytes
+                        // we already ingested are gone, so purge this file's
+                        // events and re-read from the start, idempotently.
+                        self.purge_source(&key);
+                        0
                     } else {
                         poff
                     }
@@ -169,7 +235,8 @@ impl Store {
                     continue;
                 }
                 let Ok(s) = std::str::from_utf8(line) else { continue };
-                if let Some(ev) = parse_line(s) {
+                if let Some(mut ev) = parse_line(s) {
+                    ev.source = key.clone();
                     if !ev.id.is_empty() {
                         if let Some(&i) = self.index.get(&ev.id) {
                             // Same message, another line: merge its tool calls
@@ -186,8 +253,9 @@ impl Store {
             }
             offset += process_until as u64;
             self.manifest.files.insert(key, (size, mtime_ms, offset));
+            dirty = true;
         }
-        self.events.len() - before
+        dirty
     }
 }
 
@@ -247,6 +315,7 @@ fn parse_user_command(v: &serde_json::Value) -> Option<RawEvent> {
         mcp: Vec::new(),
         skills: vec![skill],
         id,
+        source: String::new(),
     })
 }
 
@@ -312,5 +381,6 @@ fn parse_assistant(v: &serde_json::Value) -> Option<RawEvent> {
         mcp,
         skills,
         id,
+        source: String::new(),
     })
 }

@@ -70,15 +70,26 @@ fn vendor_of(model: &str) -> &'static str {
 pub fn build_dashboard() -> Dashboard {
     let _guard = BUILD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
-    // 1. Ingest: incrementally read only new log bytes, persist (full scan only
-    //    on first run; afterwards just the appended lines).
+    // 1. Ingest incrementally (full scan only on first run; afterwards just the
+    //    appended lines), prune events older than the heatmap window, and persist
+    //    only when something actually changed — so an idle tick doesn't rewrite
+    //    the entire events.json every 30s.
     let mut store = Store::load();
-    store.ingest();
-    store.save();
+    let mut dirty = store.ingest();
+    // Reports/heatmap span ~26 weeks (+ prev month); 210 days leaves margin.
+    let cutoff = (Local::now() - Duration::days(210)).timestamp_millis();
+    if store.prune_before(cutoff) {
+        dirty = true;
+    }
+    if dirty {
+        store.save();
+    }
 
     // 2. Aggregate: apply current config + prices, slice by current time.
     let cfg = UserConfig::load();
-    let pricing = Pricing::load();
+    // Memoized price table (cheap clone); loaded/refreshed off-thread elsewhere
+    // so neither parsing nor the network runs while we hold BUILD_LOCK.
+    let pricing = Pricing::shared();
     let events: Vec<Event> = store
         .events
         .iter()
