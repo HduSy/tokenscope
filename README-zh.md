@@ -4,7 +4,7 @@
 
 <a href="https://www.producthunt.com/products/tokenscope-2?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-tokenscope-2" target="_blank" rel="noopener noreferrer"><img alt="Tokenscope - MacOS menu-bar dashboard for Claude CLI token usage | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1165012&amp;theme=light&amp;t=1780816780292"></a>
 
-macOS 菜单栏工具，展示 Claude CLI 的 **每日 Token 用量、估算花费、按模型 / MCP / Skill 的调用统计**。
+**macOS 菜单栏 / Windows 系统托盘工具**，展示 Claude CLI 的 **每日 Token 用量、估算花费、按模型 / MCP / Skill 的调用统计**。
 
 技术栈：**Tauri 2 + React + TypeScript**（前端）/ **Rust**（数据层）。
 
@@ -98,9 +98,17 @@ brew update && brew upgrade --cask tokenscope
 
 > 未签名是当前的已知限制。要彻底「双击直开」需 Apple Developer ID 签名 + 公证，见 `PRD.md` §6.4。
 
+### 方式三：Windows 安装
+
+1. 从 [Releases](https://github.com/HduSy/tokenscope/releases) 下载最新的 `Tokenscope_*_x64-setup.exe`
+2. 双击安装。因为是**未签名**构建，首次运行会被 SmartScreen 拦截 —— 点 **"更多信息" → "仍要运行"** 即可
+3. 安装器按当前用户安装（无需管理员权限），并**自动注册开机自启**
+4. 系统要求：**Windows 10 1803 及以上 / Windows 11**，需要 WebView2 运行时（Win 11 预装；Win 10 用户若没装，安装器会引导补装）
+
 ### 首次启动后
 
-- 菜单栏出现图标 + 当日 Token 数（如 `⬡ 12.40M`）
+- **macOS**：菜单栏出现图标 + 当日 Token 数（如 `⬡ 12.40M`）
+- **Windows**：系统托盘出现图标。Windows 任务栏托盘 API 不支持在图标旁显示文字，**鼠标悬停托盘图标**即可看到当日 Token 数（提示气泡形如 `Tokenscope · today 12.40M`）
 - 左键点击图标开/关面板，右键出菜单（Open / Refresh / Quit）
 - 已自动设置**登录自启**，无需手动配置
 
@@ -122,10 +130,10 @@ cd src-tauri && cargo run --example dump > ../public/dev-dashboard.json
 ## 构建
 
 ```bash
-pnpm tauri build       # 产出 .app / .dmg 到 src-tauri/target/release/bundle/
+pnpm tauri build       # macOS 产出 .app / .dmg，Windows 产出 .exe (NSIS)，均位于 src-tauri/target/release/bundle/
 ```
 
-分发见 `PRD.md` §6.3（推荐 Homebrew Cask；`.dmg` 直接下载建议代码签名 + 公证）。
+分发见 `PRD.md` §6.3（macOS 推荐 Homebrew Cask；`.dmg` / `.exe` 直接下载建议代码签名 + 公证）。
 
 ## 结构
 

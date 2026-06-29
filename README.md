@@ -4,7 +4,7 @@
 
 <a href="https://www.producthunt.com/products/tokenscope-2?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-tokenscope-2" target="_blank" rel="noopener noreferrer"><img alt="Tokenscope - MacOS menu-bar dashboard for Claude CLI token usage | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1165012&amp;theme=light&amp;t=1780816780292"></a>
 
-A macOS menu-bar app that shows your Claude CLI **daily token usage, estimated cost, and per-model / MCP / Skill call breakdown**.
+A **menu-bar / system-tray app for macOS and Windows** that shows your Claude CLI **daily token usage, estimated cost, and per-model / MCP / Skill call breakdown**.
 
 Stack: **Tauri 2 + React + TypeScript** (frontend) / **Rust** (data layer).
 
@@ -98,9 +98,17 @@ brew update && brew upgrade --cask tokenscope
 
 > Unsigned is a current known limitation. A true "double-click to open" experience requires Apple Developer ID signing + notarization — see `PRD.md` §6.4.
 
+### Option 3: Install on Windows
+
+1. Download the latest `Tokenscope_*_x64-setup.exe` from [Releases](https://github.com/HduSy/tokenscope/releases)
+2. Double-click to install. Because the build is **unsigned**, Windows SmartScreen will warn on first run — click **More info → Run anyway**
+3. The app installs per-user (no admin required) and registers itself for **launch at login** automatically
+4. Requirements: **Windows 10 1803+ / Windows 11** with the WebView2 runtime (preinstalled on Windows 11; Windows 10 users without it will be prompted by the installer)
+
 ### After first launch
 
-- An icon plus today's token count appears in the menu bar (e.g. `⬡ 12.40M`)
+- **macOS**: an icon plus today's token count appears in the menu bar (e.g. `⬡ 12.40M`)
+- **Windows**: the tray icon appears in the notification area. The Windows tray API doesn't show a label beside the icon — **hover the tray icon** to see today's token count in the tooltip (e.g. `Tokenscope · today 12.40M`)
 - Left-click the icon to toggle the panel; right-click for the menu (Open / Refresh / Quit)
 - **Launch-at-login is set up automatically** — no manual configuration needed
 
@@ -122,10 +130,10 @@ cd src-tauri && cargo run --example dump > ../public/dev-dashboard.json
 ## Build
 
 ```bash
-pnpm tauri build       # outputs .app / .dmg to src-tauri/target/release/bundle/
+pnpm tauri build       # outputs .app / .dmg on macOS, .exe (NSIS) on Windows to src-tauri/target/release/bundle/
 ```
 
-For distribution see `PRD.md` §6.3 (Homebrew Cask recommended; direct `.dmg` downloads benefit from code signing + notarization).
+For distribution see `PRD.md` §6.3 (Homebrew Cask recommended on macOS; direct `.dmg` / `.exe` downloads benefit from code signing + notarization).
 
 ## Structure
 
