@@ -9,9 +9,21 @@ on:
 
 jobs:
   release:
-    runs-on: macos-latest
     permissions:
       contents: write
+    strategy:
+      # One platform's failure must not cancel the other — a broken Windows
+      # bundler shouldn't block the macOS .dmg from publishing (and vice versa).
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: universal-apple-darwin
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            rust-targets: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
 
@@ -26,10 +38,10 @@ jobs:
           node-version: 22
           cache: pnpm
 
-      - name: Setup Rust (universal targets)
+      - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          targets: ${{ matrix.rust-targets }}
 
       - name: Cache Rust
         uses: swatinem/rust-cache@v2
@@ -39,11 +51,11 @@ jobs:
       - name: Install frontend deps
         run: pnpm install
 
-      - name: Build & publish release (universal .dmg)
+      - name: Build & publish release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # --- Code signing + notarization (optional) ---
+          # --- Code signing + notarization (optional, macOS only) ---
           # UNSIGNED BUILD BY DEFAULT. Do NOT uncomment these until the matching
           # secrets actually exist: tauri's bundler treats an empty
           # APPLE_CERTIFICATE env var as "a certificate is present" and then
@@ -58,26 +70,29 @@ jobs:
           #   APPLE_ID: ${{ secrets.APPLE_ID }}                                      # Apple ID email
           #   APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}                          # app-specific password
           #   APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}                            # 10-char Team ID
+          # Windows builds are also unsigned — users get a SmartScreen warning
+          # on first launch, see README "Install on Windows".
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "Tokenscope ${{ github.ref_name }}"
           releaseBody: |
-            macOS menu-bar dashboard for Claude CLI token usage.
+            Menu-bar / system-tray dashboard for Claude CLI token usage.
 
-            Download `Tokenscope_*_universal.dmg` below (works on Apple Silicon and Intel).
+            **macOS**: download `Tokenscope_*_universal.dmg` (Apple Silicon + Intel). Unsigned — right-click → **Open** on first launch, or install via `brew install --cask hdusy/tokenscope/tokenscope`.
 
-            > Unsigned build — on first launch, right-click the app → **Open**
-            > (or install via `brew` once a cask is published).
+            **Windows**: download `Tokenscope_*_x64-setup.exe`. Unsigned — on first launch click **More info → Run anyway** to dismiss SmartScreen.
           # Publish immediately (not a draft): the asset's public download URL
           # must be live for the Homebrew Cask step below to fetch it and for
           # `brew install` to work.
           releaseDraft: false
           prerelease: false
-          args: --target universal-apple-darwin
+          args: --target ${{ matrix.target }}
 
       # Append an auto-generated changelog (PRs/commits since the previous tag)
       # to the release notes. Best-effort: never fail the release over notes.
+      # Only run once (on the macOS leg) — both jobs publish to the same release.
       - name: Add changelog to release
+        if: matrix.os == 'macos-latest'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -93,6 +108,7 @@ jobs:
           gh release edit "${{ github.ref_name }}" --notes-file release-body.md
 
       - name: Update Homebrew Cask
+        if: matrix.os == 'macos-latest'
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
