@@ -9,6 +9,10 @@ on:
 
 jobs:
   release:
+    # Only build/publish for version tags. workflow_dispatch from a branch would
+    # otherwise set the version/tag to the branch name and publish a malformed
+    # release (and fail the Homebrew step on the resulting 404).
+    if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
     strategy:
