@@ -184,6 +184,12 @@ function ScreenshotButton({ theme, busy, onClick }: { theme: Theme; busy: boolea
 
 function Panel({ dash, dark, onToggleTheme, openGen, active }: { dash: Dashboard; dark: boolean; onToggleTheme: () => void; openGen: number; active: boolean }) {
   const t = TH[dark ? "dark" : "light"];
+  // Drag the popover by its body (Windows/Linux only — macOS uses the menu-bar
+  // NSPanel and is gated out). A real OS window-drag begins only once the
+  // pointer moves past a small threshold, so a plain click still clicks through
+  // / dismisses and never arms the hide-suppression guard.
+  const canDrag = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window && !navigator.userAgent.includes("Macintosh");
+  const dragRef = useRef<{ x: number; y: number } | null>(null);
   const [period, setPeriod] = useState<"Day" | "Week" | "Month">("Week");
   const P: PeriodReport = period === "Day" ? dash.day : period === "Month" ? dash.month : dash.week;
   const M = P.metrics;
@@ -259,11 +265,30 @@ function Panel({ dash, dark, onToggleTheme, openGen, active }: { dash: Dashboard
       background: "transparent", padding: 0,
       fontFamily: t.ui,
     }}>
-      <div className="om-scroll" style={{
+      <div className="om-scroll"
+        onMouseDown={canDrag ? (e) => {
+          // Record the press; the real drag only starts once the pointer moves
+          // past the threshold (onMouseMove). Skip interactive controls
+          // (data-no-drag) and non-left buttons so clicks still register.
+          if (e.button !== 0) return;
+          if ((e.target as HTMLElement).closest("[data-no-drag]")) return;
+          dragRef.current = { x: e.clientX, y: e.clientY };
+        } : undefined}
+        onMouseMove={canDrag ? (e) => {
+          const s = dragRef.current;
+          if (!s) return;
+          const dx = e.clientX - s.x, dy = e.clientY - s.y;
+          if (dx * dx + dy * dy >= 16) { // ~4px → a drag, not a click
+            dragRef.current = null;
+            invoke("begin_drag").catch(() => {});
+          }
+        } : undefined}
+        onMouseUp={canDrag ? () => { dragRef.current = null; } : undefined}
+        style={{
         width: "100%", height: "100%", overflowY: "auto",
         borderRadius: 12, background: dark ? "#1f2226" : "#ffffff",
         border: `1px solid ${dark ? "rgba(255,255,255,0.10)" : "rgba(0,0,0,0.08)"}`,
-        padding: 0, color: t.text,
+        padding: 0, color: t.text, cursor: canDrag ? "grab" : undefined,
       }}>
         {/* sticky header — stays put while the body scrolls */}
         <div style={{
@@ -277,7 +302,7 @@ function Panel({ dash, dark, onToggleTheme, openGen, active }: { dash: Dashboard
             <TokenGlyph color={t.accent} size={16} />
             <span style={{ font: `600 13px ${t.ui}`, color: t.text, letterSpacing: ".01em" }}>Tokenscope</span>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div data-no-drag="" style={{ display: "flex", alignItems: "center", gap: 8, cursor: "default" }}>
             <Segmented value={period} theme={t} onSelect={(v) => setPeriod(v as any)} />
             <ThemeToggle dark={dark} theme={t} onToggle={onToggleTheme} />
             <ScreenshotButton theme={t} busy={shotBusy} onClick={captureScreenshot} />
