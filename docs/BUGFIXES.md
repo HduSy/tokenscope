@@ -169,6 +169,62 @@ fix. Newest first. Useful as a reference for similar issues.
 
 ---
 
+## Theme
+
+### 14. "System" theme mode didn't follow the macOS appearance
+
+- **Symptom**: On macOS, the "System" theme option didn't track the OS dark/light
+  mode — neither when toggling system appearance with the popover open, nor after
+  quitting and relaunching the app (it stayed on the launch-time appearance).
+  Windows was unaffected.
+- **Cause**: The frontend derived the system appearance entirely from
+  `window.matchMedia("(prefers-color-scheme: dark)")` (`App.tsx`). But Tokenscope
+  is an `Accessory` (menu-bar) app whose popover is a **non-activating `NSPanel`**
+  that is `order_out`'d (hidden) most of the time. In that configuration
+  WKWebView's `prefers-color-scheme` is unreliable: it doesn't reliably fire the
+  `change` event on a system theme switch while the webview is hidden, and at
+  launch an Accessory app's `NSApp.effectiveAppearance` (what WKWebView reports)
+  may not be synced to the current system value — so even a fresh restart reads
+  the wrong appearance.
+- **Fix**: Read the OS dark-mode setting natively in Rust and push it to the
+  frontend via a Tauri event, bypassing the webview. `system_is_dark()` reads
+  `NSUserDefaults`'s `AppleInterfaceStyle` (the user's **global** system
+  preference, independent of app focus). `watch_system_theme()` listens on
+  `NSDistributedNotificationCenter` for `AppleInterfaceThemeChangedNotification`
+  — delivered to every registered app regardless of activation policy or
+  frontmost status — and `emit("system-theme", dark)`. `setup()` also emits once
+  at startup to correct any stale webview value. The frontend's
+  `listen("system-theme")` updates `systemDark`; the existing `matchMedia`
+  listener stays as the source of truth on Windows / browser preview. macOS-only
+  (`#[cfg(target_os = "macos")]`), no new dependencies — uses the `objc`/`cocoa`/
+  `block` re-exports already imported in `lib.rs`. (`src-tauri/src/lib.rs`,
+  `src/App.tsx`)
+
+### 15. Selected period pill flashed white→transparent on a light→dark switch
+
+- **Symptom**: After the fix above, switching the system theme from light to dark
+  while the popover was hidden, then opening it, showed a brief "white →
+  transparent" fade on the currently-selected period pill (Day/Week/Month) for a
+  moment — most visible element of an otherwise-instant flip.
+- **Cause**: The `Segmented` selected pill carries
+  `transition: "color .15s, background .15s"` (`charts.tsx`), wanted for smooth
+  period-switching. On a *whole-theme* flip this turns every color change into a
+  cross-fade; the white selected background fading into the dark one was the most
+  jarring. Because the panel is hidden when the theme change lands, the first
+  painted frame on open is still the old light theme, then the new theme is
+  applied and the transition animates the change visibly.
+- **Fix**: Suppress per-property transitions across a theme flip so the panel
+  repaints in the new theme in one step. Added a global `.ts-no-transition` rule
+  (`main.tsx`) and an effect (`App.tsx`) that adds it to `<html>` when `dark`
+  changes and removes it after two `requestAnimationFrame`s. Because rAF callbacks
+  don't run while the window is hidden, the class stays on until the popover is
+  shown — so the first visible frame is already the new theme with no transition,
+  then transitions are restored for normal interactions (e.g. clicking
+  Day/Week/Month still animates). Skipped on the very first render.
+  (`src/main.tsx`, `src/App.tsx`)
+
+---
+
 ## Notes
 
 - "Month" was also changed from a rolling 30-day window to the **current

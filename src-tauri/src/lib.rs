@@ -571,6 +571,68 @@ fn register_panel_autohide(app: &tauri::AppHandle) {
     }
 }
 
+/// Read the user's GLOBAL macOS appearance preference: true when dark mode is on.
+/// We read `AppleInterfaceStyle` from NSUserDefaults (present and "Dark" => dark,
+/// absent => light) rather than the app's NSApp.effectiveAppearance — an
+/// Accessory (menu-bar) app never becomes frontmost, so its effective appearance
+/// (and thus the webview's `prefers-color-scheme`) can lag the real system value.
+/// The user default reflects the system setting directly, regardless of focus.
+#[cfg(target_os = "macos")]
+fn system_is_dark() -> bool {
+    use std::ffi::CStr;
+    use tauri_nspanel::cocoa::base::{id, nil};
+    use tauri_nspanel::objc::{class, msg_send, sel, sel_impl};
+    unsafe {
+        let defaults: id = msg_send![class!(NSUserDefaults), standardUserDefaults];
+        let key: id = msg_send![
+            class!(NSString),
+            stringWithUTF8String: b"AppleInterfaceStyle\0".as_ptr() as *const std::os::raw::c_char
+        ];
+        let val: id = msg_send![defaults, stringForKey: key];
+        if val == nil {
+            return false;
+        }
+        let raw: *const std::os::raw::c_char = msg_send![val, UTF8String];
+        if raw.is_null() {
+            return false;
+        }
+        CStr::from_ptr(raw).to_string_lossy().eq_ignore_ascii_case("dark")
+    }
+}
+
+/// Watch for live system dark/light-mode changes and push them to the frontend.
+/// `AppleInterfaceThemeChangedNotification` is posted on the DISTRIBUTED
+/// notification center the instant the user flips Appearance, and is delivered
+/// to every registered app regardless of activation policy or frontmost status —
+/// so it works for our hidden, non-activating menu-bar panel where the webview's
+/// own `prefers-color-scheme` `change` event does not reliably fire. The observer
+/// lives for the whole app lifetime, so the returned token is intentionally
+/// dropped (same as register_panel_autohide).
+#[cfg(target_os = "macos")]
+fn watch_system_theme(app: &tauri::AppHandle) {
+    use std::ffi::CString;
+    use tauri_nspanel::block::ConcreteBlock;
+    use tauri_nspanel::cocoa::base::{id, nil};
+    use tauri_nspanel::objc::{class, msg_send, sel, sel_impl};
+
+    unsafe {
+        let center: id = msg_send![class!(NSDistributedNotificationCenter), defaultCenter];
+        let app = app.clone();
+        let block = ConcreteBlock::new(move |_notif: id| {
+            let _ = app.emit("system-theme", system_is_dark());
+        });
+        let block = block.copy();
+        let ns_name: id = msg_send![
+            class!(NSString),
+            stringWithUTF8String: CString::new("AppleInterfaceThemeChangedNotification").unwrap().as_ptr()
+        ];
+        let _: id = msg_send![
+            center,
+            addObserverForName: ns_name object: nil queue: nil usingBlock: block
+        ];
+    }
+}
+
 /// Show the panel as a popover anchored under the tray icon, and focus it.
 /// Always reset the scroll to the top so it doesn't reopen mid-scroll.
 fn show_popover(app: &tauri::AppHandle) {
@@ -763,6 +825,14 @@ pub fn run() {
 
                 // Also hide on Space change / app activation, not just resign-key.
                 register_panel_autohide(app.handle());
+
+                // Follow the system appearance natively (the webview's
+                // prefers-color-scheme is unreliable for a hidden, non-activating
+                // menu-bar panel). Watch for live changes, and emit the current
+                // value once now so the frontend's System mode starts correct even
+                // if the webview reported a stale appearance at launch.
+                watch_system_theme(app.handle());
+                let _ = app.emit("system-theme", system_is_dark());
             }
 
             // Non-macOS: keep the plain window, hide on focus loss.

@@ -480,6 +480,12 @@ export default function App() {
     // live updates pushed from the background refresh thread — swaps the data in
     // place (no Loading), so values update without any flicker.
     listen<Dashboard>("dashboard-updated", (e) => apply(e.payload)).then(track);
+    // System appearance pushed natively from Rust (macOS). The webview's
+    // prefers-color-scheme is unreliable for our hidden, non-activating menu-bar
+    // panel, so the native event is the source of truth for System mode there;
+    // it fires once at startup (correcting any stale launch value) and on every
+    // OS theme change. Harmlessly never fires on Windows, where matchMedia works.
+    listen<boolean>("system-theme", (e) => setSystemDark(e.payload)).then(track);
     // refetch the instant the popover gains focus (i.e. is opened)
     getCurrentWindow()
       .onFocusChanged(({ payload: focused }) => {
@@ -499,6 +505,28 @@ export default function App() {
   // window is transparent; the rounded card paints its own background
   useEffect(() => {
     document.body.style.background = "transparent";
+  }, [dark]);
+
+  // Suppress per-property CSS transitions across a theme flip so the panel
+  // repaints in the new theme in one step instead of cross-fading each color
+  // (see .ts-no-transition in main.tsx). A background light→dark switch lands
+  // while the panel is hidden; rAF callbacks don't run while hidden, so the
+  // class stays on until the popover is shown — the first painted frame is
+  // already the new theme with no transition, then we strip it a couple of
+  // frames later so live interactions (e.g. switching the period) animate as
+  // before. Skipped on the very first render (no prior frame to cross-fade).
+  const firstThemeRun = useRef(true);
+  useEffect(() => {
+    if (firstThemeRun.current) {
+      firstThemeRun.current = false;
+      return;
+    }
+    const el = document.documentElement;
+    el.classList.add("ts-no-transition");
+    const id = requestAnimationFrame(() =>
+      requestAnimationFrame(() => el.classList.remove("ts-no-transition"))
+    );
+    return () => cancelAnimationFrame(id);
   }, [dark]);
 
   const t = TH[dark ? "dark" : "light"];
