@@ -296,7 +296,12 @@ fn report_day(events: &[Event], now: DateTime<Local>) -> PeriodReport {
             buckets[h].0 += e.input / 1e6;
             buckets[h].1 += e.cache / 1e6;
             buckets[h].2 += e.output / 1e6;
-            req_b[h] += 1.0;
+            // Match Agg::add exactly: only the request COUNT excludes model-less
+            // (slash-command) events; total cost accumulates unconditionally
+            // (those events carry cost 0, so this is identical today).
+            if !e.model.is_empty() {
+                req_b[h] += 1.0;
+            }
             cost_b[h] += e.cost;
         } else if d == yesterday {
             prev.add(e);
@@ -358,7 +363,11 @@ fn report_week(events: &[Event], now: DateTime<Local>) -> PeriodReport {
                 buckets[idx].0 += e.input / 1e6;
                 buckets[idx].1 += e.cache / 1e6;
                 buckets[idx].2 += e.output / 1e6;
-                req_b[idx] += 1.0;
+                // Match Agg::add: only the request COUNT excludes model-less
+                // events; cost accumulates unconditionally (their cost is 0).
+                if !e.model.is_empty() {
+                    req_b[idx] += 1.0;
+                }
                 cost_b[idx] += e.cost;
             }
         } else if d >= prev_start && d < start {
@@ -428,7 +437,11 @@ fn report_month(events: &[Event], now: DateTime<Local>) -> PeriodReport {
                 buckets[idx].0 += e.input / 1e6;
                 buckets[idx].1 += e.cache / 1e6;
                 buckets[idx].2 += e.output / 1e6;
-                req_b[idx] += 1.0;
+                // Match Agg::add: only the request COUNT excludes model-less
+                // events; cost accumulates unconditionally (their cost is 0).
+                if !e.model.is_empty() {
+                    req_b[idx] += 1.0;
+                }
                 cost_b[idx] += e.cost;
             }
         } else if d >= prev_first && d < cur_first {

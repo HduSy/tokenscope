@@ -192,9 +192,23 @@ fn check_milestones(app: &tauri::AppHandle, dash: &Dashboard) {
 
     let mut g = state.state.lock().unwrap();
     let fire = milestone_fire(g.as_ref(), &cur);
-    *g = Some(cur.clone());
+    // Keep the persisted floors monotonic within a period: a later observation
+    // with a lower total (a transient/partial read, or two observers racing)
+    // must not regress the stored floor and re-fire the celebration on restart.
+    let mut next = cur.clone();
+    if let Some(prev) = g.as_ref() {
+        if prev.week_id == next.week_id && prev.week_floor > next.week_floor {
+            next.week_floor = prev.week_floor;
+        }
+        if prev.month_id == next.month_id && prev.month_floor > next.month_floor {
+            next.month_floor = prev.month_floor;
+        }
+    }
+    *g = Some(next.clone());
+    // Persist while still holding the lock so two observers can't interleave and
+    // write a stale snapshot over a newer one.
+    save_milestones(&next);
     drop(g);
-    save_milestones(&cur);
     if fire {
         celebrate(app);
     }
@@ -599,7 +613,6 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             show_popover(app);
         }))
-        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_positioner::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -829,6 +842,42 @@ pub fn run() {
                 std::thread::sleep(Duration::from_secs(30));
                 refresh(&handle);
             });
+
+            // Filesystem watcher: reflect a log write within ~1s instead of
+            // waiting up to the 30s poll (PRD wants <=5s). Writes land in
+            // ~/.claude/projects; our own cache lives elsewhere, so this never
+            // self-triggers. Debounced so a burst of writes coalesces into one
+            // rebuild; the 30s poll above stays as a fallback. (build_dashboard
+            // serializes on BUILD_LOCK, so this and the poll can't race the cache.)
+            if let Some(projects) = dirs::home_dir().map(|h| h.join(".claude").join("projects")) {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    use notify::{RecursiveMode, Watcher};
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    let mut watcher = match notify::recommended_watcher(
+                        move |res: notify::Result<notify::Event>| {
+                            if res.is_ok() {
+                                let _ = tx.send(());
+                            }
+                        },
+                    ) {
+                        Ok(w) => w,
+                        Err(_) => return,
+                    };
+                    // Claude Code may not have created the dir yet on a fresh
+                    // machine; create it so watch() registers instead of silently
+                    // falling back to the 30s poll for the whole session.
+                    let _ = std::fs::create_dir_all(&projects);
+                    if watcher.watch(&projects, RecursiveMode::Recursive).is_err() {
+                        return;
+                    }
+                    // Block for the first change, then drain the burst until quiet.
+                    while rx.recv().is_ok() {
+                        while rx.recv_timeout(Duration::from_millis(400)).is_ok() {}
+                        refresh(&handle);
+                    }
+                });
+            }
 
             Ok(())
         })

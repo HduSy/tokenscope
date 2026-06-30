@@ -16,7 +16,6 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["tray-icon", "macos-private-api"] }
 # decode the base64 PNG body of a screenshot data URL (see save_screenshot)
 base64 = "0.22"
-tauri-plugin-shell = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-positioner = { version = "2", features = ["tray-icon"] }
 serde = { version = "1", features = ["derive"] }
@@ -25,7 +24,9 @@ chrono = { version = "0.4", features = ["serde"] }
 dirs = "5"
 ureq = { version = "2", features = ["json"] }
 walkdir = "2"
-tauri-plugin-single-instance = "2.4.2"
+# watch ~/.claude/projects so the dashboard refreshes within ~1s of a log write
+notify = "6"
+tauri-plugin-single-instance = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2" }
