@@ -436,42 +436,49 @@ fn save_popover_pos(x: i32, y: i32) {
     }
 }
 
-/// Position the popover: reopen at the user's last-dragged spot if it's still on
-/// a connected monitor, otherwise pin it to the top-right corner of the tray's
-/// monitor with a small margin. The monitor is chosen from the cached tray-icon
-/// position (so the default lands on the screen whose taskbar holds the tray
-/// icon), falling back to the current/primary monitor. We anchor to the work
-/// area (taskbar excluded), so the margin stays clean no matter where the
-/// taskbar sits. All coordinates are physical px; the margin scales with DPI.
+/// Position AND right-size the popover for the monitor it opens on. Reopens at
+/// the user's last-dragged spot if it's still on a connected monitor, else pins
+/// to the top-right of the tray monitor's work area (margin from the edges).
+///
+/// Everything is derived from the *intended* logical size × the target monitor's
+/// scale — never the window's current physical size — and the size is re-asserted
+/// on every open. A borderless window can otherwise get stuck at the previous
+/// monitor's physical size after a DPI/monitor change (e.g. unplugging a 175%
+/// display drops back to 100% but the window stays oversized until restart);
+/// forcing the size here makes it recover on the next open. The monitor is
+/// resolved from the cached tray rect -> current -> primary; work_area excludes
+/// the taskbar so the margin is clean wherever the taskbar sits.
 #[cfg(not(target_os = "macos"))]
 fn position_popover_windows(app: &tauri::AppHandle) {
+    // Logical size — must match app.windows[0] width/height in tauri.conf.json.
+    const POPOVER_W: f64 = 400.0;
+    const POPOVER_H: f64 = 660.0;
     const MARGIN: f64 = 12.0; // logical px gap from the screen edges
+
     let Some(w) = app.get_webview_window("main") else {
         return;
     };
-    let Ok(size) = w.outer_size() else {
-        return;
+    // Force the intended size at the target monitor's DPI (recovers a stuck size).
+    let fit = |scale: f64| {
+        let _ = w.set_size(tauri::PhysicalSize::new(
+            (POPOVER_W * scale).round() as u32,
+            (POPOVER_H * scale).round() as u32,
+        ));
     };
-    let win_w = size.width as f64;
 
-    // 1. Reopen where the user last left it, if that spot is still on a connected
-    //    monitor (a since-disconnected monitor would otherwise open it off-screen
-    //    — fall through to the default). Check the title-bar midpoint, the part
-    //    the user grabs to drag, so it's always reachable.
+    // 1. Reopen at the last position if a point just inside it is still on a
+    //    connected monitor (a disconnected/shrunk monitor falls through to the
+    //    default rather than opening off-screen).
     if let Some((sx, sy)) = load_popover_pos() {
-        let reachable = w
-            .monitor_from_point(sx as f64 + win_w / 2.0, sy as f64 + 10.0)
-            .ok()
-            .flatten()
-            .is_some();
-        if reachable {
+        if let Ok(Some(m)) = w.monitor_from_point(sx as f64 + 20.0, sy as f64 + 20.0) {
             let _ = w.set_position(tauri::PhysicalPosition::new(sx, sy));
+            fit(m.scale_factor());
             return;
         }
     }
 
-    // 2. Default: top-right of the tray's monitor work area.
-    // Prefer the monitor under the tray icon; fall back to current, then primary.
+    // 2. Default: top-right of the tray monitor's work area.
+    //    Prefer the monitor under the tray icon; fall back to current, then primary.
     let anchor = app
         .try_state::<TrayAnchor>()
         .and_then(|s| *s.0.lock().unwrap());
@@ -484,16 +491,12 @@ fn position_popover_windows(app: &tauri::AppHandle) {
         let area = m.work_area(); // excludes the taskbar
         let scale = m.scale_factor();
         let margin = MARGIN * scale; // keep the visual gap DPI-consistent
-        // win_w is physical px at the window's CURRENT monitor scale; the window
-        // resizes to its fixed logical width when moved onto `m`, so convert to
-        // the TARGET monitor's scale — otherwise a mixed-DPI multi-monitor open
-        // subtracts mismatched units and clips off the right edge.
-        let cur_scale = w.scale_factor().unwrap_or(scale);
-        let win_w_on_m = win_w / cur_scale * scale;
+        let win_w = POPOVER_W * scale; // intended physical width on this monitor
         let right = area.position.x as f64 + area.size.width as f64;
-        let x = right - win_w_on_m - margin;
+        let x = right - win_w - margin;
         let y = area.position.y as f64 + margin;
         let _ = w.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
+        fit(scale);
     } else {
         // Couldn't resolve a monitor (rare) → let the positioner place it.
         let _ = w.move_window(Position::TopRight);
