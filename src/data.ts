@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 
 export interface SeriesPoint { label: string; full: string; input: number; cache: number; output: number }
 export interface ModelStat { name: string; vendor: string; tokens: number; cost: number; color: string; priced: boolean }
@@ -20,8 +20,7 @@ export interface Dashboard {
 
 export async function fetchDashboard(): Promise<Dashboard> {
   // Inside the Tauri runtime → call the Rust backend.
-  const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-  if (inTauri) return invoke<Dashboard>("get_dashboard");
+  if (isTauri()) return invoke<Dashboard>("get_dashboard");
   // Browser dev/preview fallback → static snapshot of real data.
   const res = await fetch("/dev-dashboard.json");
   if (!res.ok) throw new Error("not running in Tauri and no dev snapshot found");

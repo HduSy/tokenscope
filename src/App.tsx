@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { domToPng } from "modern-screenshot";
 import {
   Dashboard, PeriodReport, ModelStat, Theme, TH,
@@ -195,7 +195,7 @@ function Panel({ dash, dark, themePref, onToggleTheme, openGen, active }: { dash
   // NSPanel and is gated out). A real OS window-drag begins only once the
   // pointer moves past a small threshold, so a plain click still clicks through
   // / dismisses and never arms the hide-suppression guard.
-  const canDrag = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window && !navigator.userAgent.includes("Macintosh");
+  const canDrag = isTauri() && !navigator.userAgent.includes("Macintosh");
   const dragRef = useRef<{ x: number; y: number } | null>(null);
   const [period, setPeriod] = useState<"Day" | "Week" | "Month">("Week");
   const P: PeriodReport = period === "Day" ? dash.day : period === "Month" ? dash.month : dash.week;
@@ -256,8 +256,7 @@ function Panel({ dash, dark, themePref, onToggleTheme, openGen, active }: { dash
         height: el.scrollHeight,
         filter: (n) => !(n instanceof HTMLElement && n.getAttribute("aria-label") === "save screenshot"),
       });
-      const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-      if (inTauri) {
+      if (isTauri()) {
         await invoke<string>("save_screenshot", { dataUrl });
         showToast("Saved to Desktop", true);
       } else {
@@ -477,8 +476,7 @@ export default function App() {
     // initial load (shows the Loading state only until the first data arrives)
     fetchDashboard().then(apply).catch((e) => setErr(String(e)));
 
-    const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-    if (!inTauri) return;
+    if (!isTauri()) return;
     // Under StrictMode the effect mounts → cleans up → remounts; the async
     // listen()/onFocusChanged() promises can resolve after the first cleanup,
     // so unregister any late arrival immediately instead of leaking a duplicate.
