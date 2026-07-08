@@ -74,7 +74,7 @@ So a cache hit is **not** billed as normal input — it uses the dedicated (chea
 ### Option 1: Homebrew (recommended)
 
 ```bash
-brew install --cask hdusy/tokenscope/tokenscope
+brew install --cask yuanxiong-wang/tokenscope/tokenscope
 ```
 
 The cask's `postflight` strips the quarantine attribute (`xattr -cr`) automatically, so **it opens on first launch without the "Apple cannot verify" prompt**.
@@ -89,7 +89,7 @@ brew update && brew upgrade --cask tokenscope
 
 ### Option 2: Download the .dmg
 
-1. Download the latest `Tokenscope_*_universal.dmg` from [Releases](https://github.com/HduSy/tokenscope/releases) (works on both Apple Silicon and Intel)
+1. Download the latest `Tokenscope_*_universal.dmg` from [Releases](https://github.com/yuanxiong-wang/tokenscope/releases) (works on both Apple Silicon and Intel)
 2. Drag it into Applications
 3. Because the build is **unsigned / unnotarized**, Gatekeeper blocks the first launch — pick one:
    - Right-click the app → **Open** → confirm **Open** again, or
@@ -102,7 +102,7 @@ brew update && brew upgrade --cask tokenscope
 
 ### Option 3: Install on Windows
 
-1. Download the latest `Tokenscope_*_x64-setup.exe` from [Releases](https://github.com/HduSy/tokenscope/releases)
+1. Download the latest `Tokenscope_*_x64-setup.exe` from [Releases](https://github.com/yuanxiong-wang/tokenscope/releases)
 2. Double-click to install. Because the build is **unsigned**, Windows SmartScreen will warn on first run — click **More info → Run anyway**
 3. The app installs per-user (no admin required) and registers itself for **launch at login** automatically
 4. Requirements: **Windows 10 1803+ / Windows 11** with the WebView2 runtime (preinstalled on Windows 11; Windows 10 users without it will be prompted by the installer)
