@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Tokenscope",
+  "productName": "Tokenscope Codex",
   "version": "1.0.3",
-  "identifier": "com.tokenscope.app",
+  "identifier": "com.tokenscope.codex",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
     "macOSPrivateApi": true,
     "windows": [
       {
-        "title": "Tokenscope",
+        "title": "Tokenscope Codex",
         "width": 400,
         "height": 660,
         "resizable": false,

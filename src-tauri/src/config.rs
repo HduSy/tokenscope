@@ -54,14 +54,14 @@ fn scan_skill_dir(dir: &Path, set: &mut HashSet<String>) {
     }
 }
 
-/// User-installed skills = global ~/.claude/skills/ only (PRD §3.3). Project-
-/// level skill dirs are intentionally not scanned: the PRD defines the skill
-/// source as the global directory, and folding in every registered project's
+/// User-installed skills = global Claude/Codex skill dirs. Project-level skill
+/// dirs are intentionally not scanned; folding in every registered project's
 /// dir inflated the "installed skills" metric.
 fn load_user_skills() -> HashSet<String> {
     let mut set = HashSet::new();
     if let Some(h) = home() {
         scan_skill_dir(&h.join(".claude").join("skills"), &mut set);
+        scan_skill_dir(&h.join(".codex").join("skills"), &mut set);
     }
     set
 }

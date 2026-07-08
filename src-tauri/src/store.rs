@@ -1,6 +1,6 @@
 // Incremental event store.
 //
-// Ingestion (this file) is the only place that touches the JSONL logs. It
+// Ingestion (this file) is the only place that touches JSONL logs. It
 // parses each assistant message into a provider/config/price-independent
 // RawEvent (just the facts), reads only newly-appended bytes of changed files
 // (tracked by a per-file size/mtime/offset manifest), dedupes by message id,
@@ -56,7 +56,8 @@ pub struct Store {
 //   v3: merge tool_use across lines sharing a message id (a thinking line + a
 //       tool_use line were deduped, dropping the tool call).
 //   v4: track a per-event source file (idempotent re-read of truncated logs).
-const STORE_VERSION: u32 = 4;
+//   v5: ingest Codex session JSONL token_count and function/tool call events.
+const STORE_VERSION: u32 = 5;
 
 /// Atomically replace `path`'s contents: write a sibling temp file, then rename
 /// over the target (same-volume rename is atomic on Windows and Unix). Avoids
@@ -67,8 +68,15 @@ fn write_atomic(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
     fs::rename(&tmp, path)
 }
 
-fn projects_dir() -> Option<PathBuf> {
-    Some(dirs::home_dir()?.join(".claude").join("projects"))
+pub fn log_roots() -> Vec<PathBuf> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    vec![
+        home.join(".claude").join("projects"),
+        home.join(".codex").join("sessions"),
+        home.join(".codex").join("archived_sessions"),
+    ]
 }
 
 fn cache_dir() -> Option<PathBuf> {
@@ -179,81 +187,94 @@ impl Store {
     /// so the caller can skip a full cache rewrite when nothing moved.
     pub fn ingest(&mut self) -> bool {
         let mut dirty = false;
-        let Some(root) = projects_dir() else {
-            return false;
-        };
-        for entry in WalkDir::new(&root)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().map(|x| x == "jsonl").unwrap_or(false))
-        {
-            let path = entry.path();
-            let key = path.to_string_lossy().to_string();
-            let Ok(meta) = fs::metadata(path) else { continue };
-            let size = meta.len();
-            let mtime_ms = meta
-                .modified()
-                .ok()
-                .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(0);
-
-            let mut offset = match self.manifest.files.get(&key).copied() {
-                Some((psize, pmtime, poff)) => {
-                    if psize == size && pmtime == mtime_ms {
-                        continue; // unchanged → skip
-                    }
-                    if size < poff {
-                        // truncated / rewritten (e.g. log compaction): the bytes
-                        // we already ingested are gone, so purge this file's
-                        // events and re-read from the start, idempotently.
-                        self.purge_source(&key);
-                        0
-                    } else {
-                        poff
-                    }
-                }
-                None => 0,
-            };
-
-            let Ok(mut f) = fs::File::open(path) else { continue };
-            if f.seek(SeekFrom::Start(offset)).is_err() {
+        for root in log_roots() {
+            if !root.exists() {
                 continue;
             }
-            let mut buf = Vec::new();
-            if f.read_to_end(&mut buf).is_err() {
-                continue;
-            }
-            // only process up to the last newline; leave a partial trailing line
-            // (file still being written) for the next pass
-            let process_until = match buf.iter().rposition(|&b| b == b'\n') {
-                Some(i) => i + 1,
-                None => 0,
-            };
-            for line in buf[..process_until].split(|&b| b == b'\n') {
-                if line.is_empty() {
+            for entry in WalkDir::new(&root)
+                .into_iter()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().extension().map(|x| x == "jsonl").unwrap_or(false))
+            {
+                let path = entry.path();
+                let key = path.to_string_lossy().to_string();
+                let Ok(meta) = fs::metadata(path) else { continue };
+                let size = meta.len();
+                let mtime_ms = meta
+                    .modified()
+                    .ok()
+                    .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+
+                let mut offset = match self.manifest.files.get(&key).copied() {
+                    Some((psize, pmtime, poff)) => {
+                        if psize == size && pmtime == mtime_ms {
+                            continue; // unchanged → skip
+                        }
+                        if size < poff {
+                            // truncated / rewritten (e.g. log compaction): the bytes
+                            // we already ingested are gone, so purge this file's
+                            // events and re-read from the start, idempotently.
+                            self.purge_source(&key);
+                            0
+                        } else {
+                            poff
+                        }
+                    }
+                    None => 0,
+                };
+
+                let Ok(mut f) = fs::File::open(path) else { continue };
+                if f.seek(SeekFrom::Start(offset)).is_err() {
                     continue;
                 }
-                let Ok(s) = std::str::from_utf8(line) else { continue };
-                if let Some(mut ev) = parse_line(s) {
-                    ev.source = key.clone();
-                    if !ev.id.is_empty() {
-                        if let Some(&i) = self.index.get(&ev.id) {
-                            // Same message, another line: merge its tool calls
-                            // (don't re-count tokens — usage repeats per line).
-                            let prev = &mut self.events[i];
-                            prev.mcp.extend(ev.mcp);
-                            prev.skills.extend(ev.skills);
-                            continue;
-                        }
-                        self.index.insert(ev.id.clone(), self.events.len());
-                    }
-                    self.events.push(ev);
+                let mut buf = Vec::new();
+                if f.read_to_end(&mut buf).is_err() {
+                    continue;
                 }
+                // only process up to the last newline; leave a partial trailing line
+                // (file still being written) for the next pass
+                let process_until = match buf.iter().rposition(|&b| b == b'\n') {
+                    Some(i) => i + 1,
+                    None => 0,
+                };
+                let mut codex_model = "codex".to_string();
+                for line in buf[..process_until].split(|&b| b == b'\n') {
+                    if line.is_empty() {
+                        continue;
+                    }
+                    let Ok(s) = std::str::from_utf8(line) else { continue };
+                    if let Some(model) = parse_codex_turn_model(s) {
+                        codex_model = model;
+                        continue;
+                    }
+                    if let Some(mut ev) = parse_line(s) {
+                        ev.source = key.clone();
+                        if ev.model == "codex" {
+                            ev.model = codex_model.clone();
+                        }
+                        if ev.session.is_empty() {
+                            ev.session = source_session(&key);
+                        }
+                        if !ev.id.is_empty() {
+                            if let Some(&i) = self.index.get(&ev.id) {
+                                // Same message, another line: merge its tool calls
+                                // (don't re-count tokens — usage repeats per line).
+                                let prev = &mut self.events[i];
+                                prev.mcp.extend(ev.mcp);
+                                prev.skills.extend(ev.skills);
+                                continue;
+                            }
+                            self.index.insert(ev.id.clone(), self.events.len());
+                        }
+                        self.events.push(ev);
+                    }
+                }
+                offset += process_until as u64;
+                self.manifest.files.insert(key, (size, mtime_ms, offset));
+                dirty = true;
             }
-            offset += process_until as u64;
-            self.manifest.files.insert(key, (size, mtime_ms, offset));
-            dirty = true;
         }
         dirty
     }
@@ -268,8 +289,102 @@ fn parse_line(line: &str) -> Option<RawEvent> {
         // user message with a <command-name> tag, NOT as a Skill tool_use, so
         // they need a separate path or they'd never be counted.
         "user" => parse_user_command(&v),
+        "event_msg" => parse_codex_token_count(&v),
+        "response_item" => parse_codex_tool_call(&v),
         _ => None,
     }
+}
+
+fn source_session(key: &str) -> String {
+    std::path::Path::new(key)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+fn parse_ts_ms(v: &serde_json::Value) -> Option<i64> {
+    let ts = v.get("timestamp")?.as_str()?;
+    Some(DateTime::parse_from_rfc3339(ts).ok()?.timestamp_millis())
+}
+
+fn parse_codex_turn_model(line: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    if v.get("type")?.as_str()? != "turn_context" {
+        return None;
+    }
+    v.get("payload")?
+        .get("model")?
+        .as_str()
+        .filter(|m| !m.is_empty())
+        .map(|m| m.to_string())
+}
+
+fn parse_codex_token_count(v: &serde_json::Value) -> Option<RawEvent> {
+    let payload = v.get("payload")?;
+    if payload.get("type")?.as_str()? != "token_count" {
+        return None;
+    }
+    let ts_ms = parse_ts_ms(v)?;
+    let usage = payload.get("info")?.get("last_token_usage")?;
+    let g = |k: &str| -> f64 { usage.get(k).and_then(|x| x.as_f64()).unwrap_or(0.0) };
+    let input = g("input_tokens");
+    let cached = g("cached_input_tokens").min(input);
+    let output = g("output_tokens");
+    if input + output <= 0.0 {
+        return None;
+    }
+    let total = payload
+        .get("info")
+        .and_then(|i| i.get("total_token_usage"))
+        .and_then(|t| t.get("total_tokens"))
+        .and_then(|t| t.as_i64())
+        .unwrap_or(0);
+    Some(RawEvent {
+        ts_ms,
+        session: String::new(),
+        model: "codex".to_string(),
+        in_tok: input - cached,
+        cc: 0.0,
+        cr: cached,
+        out_tok: output,
+        mcp: Vec::new(),
+        skills: Vec::new(),
+        id: format!("codex-token:{ts_ms}:{total}"),
+        source: String::new(),
+    })
+}
+
+fn parse_codex_tool_call(v: &serde_json::Value) -> Option<RawEvent> {
+    let payload = v.get("payload")?;
+    let kind = payload.get("type")?.as_str()?;
+    if !kind.ends_with("_call") && kind != "function_call" {
+        return None;
+    }
+    let ts_ms = parse_ts_ms(v)?;
+    let name = payload
+        .get("name")
+        .and_then(|n| n.as_str())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| kind.trim_end_matches("_call"));
+    let id = payload
+        .get("id")
+        .or_else(|| payload.get("call_id"))
+        .and_then(|i| i.as_str())?
+        .to_string();
+    Some(RawEvent {
+        ts_ms,
+        session: String::new(),
+        model: String::new(),
+        in_tok: 0.0,
+        cc: 0.0,
+        cr: 0.0,
+        out_tok: 0.0,
+        mcp: vec![name.to_string()],
+        skills: Vec::new(),
+        id,
+        source: String::new(),
+    })
 }
 
 /// Extract the inner text of `<tag>...</tag>` from `s`, if present.
@@ -383,4 +498,34 @@ fn parse_assistant(v: &serde_json::Value) -> Option<RawEvent> {
         id,
         source: String::new(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_codex_turn_model, parse_line};
+
+    #[test]
+    fn parses_codex_token_count() {
+        let line = r#"{"timestamp":"2026-07-07T13:56:34.624Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":25539,"cached_input_tokens":4992,"output_tokens":496,"reasoning_output_tokens":225,"total_tokens":26035},"last_token_usage":{"input_tokens":25539,"cached_input_tokens":4992,"output_tokens":496,"reasoning_output_tokens":225,"total_tokens":26035},"model_context_window":258400}}}"#;
+        let ev = parse_line(line).unwrap();
+        assert_eq!(ev.model, "codex");
+        assert_eq!(ev.in_tok, 20547.0);
+        assert_eq!(ev.cr, 4992.0);
+        assert_eq!(ev.out_tok, 496.0);
+    }
+
+    #[test]
+    fn parses_codex_tool_call() {
+        let line = r#"{"timestamp":"2026-07-07T13:56:34.051Z","type":"response_item","payload":{"type":"function_call","id":"fc_1","name":"exec_command","call_id":"call_1"}}"#;
+        let ev = parse_line(line).unwrap();
+        assert_eq!(ev.mcp, vec!["exec_command"]);
+        assert_eq!(ev.id, "fc_1");
+        assert_eq!(ev.model, "");
+    }
+
+    #[test]
+    fn parses_codex_turn_model() {
+        let line = r#"{"timestamp":"2026-07-07T13:56:26.417Z","type":"turn_context","payload":{"type":"task_started","model":"gpt-5.5"}}"#;
+        assert_eq!(parse_codex_turn_model(line).unwrap(), "gpt-5.5");
+    }
 }

@@ -380,17 +380,17 @@ function Panel({ dash, dark, themePref, onToggleTheme, openGen, active }: { dash
             <Sparkline values={P.costTrend.length ? P.costTrend : [0, 0]} theme={t} width={52} height={20} accent={t.accent} />
           </MiniStat>
         </div>
-        {/* MCP — shown whenever the user has installed MCP servers */}
+        {/* Tools — shown whenever the user has installed or used tools */}
         {M.servers > 0 && (
           <>
             <SectionRule t={t} />
             <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 7 }}>
-              <Label t={t}>MCP calls</Label>
-              <span style={{ font: `500 10px ${t.mono}`, color: t.faint, whiteSpace: "nowrap" }}><span style={{ color: t.text, fontWeight: 600 }}>{fmtInt(M.mcpCalls)}</span> · {M.servers} servers</span>
+              <Label t={t}>Tool calls</Label>
+              <span style={{ font: `500 10px ${t.mono}`, color: t.faint, whiteSpace: "nowrap" }}><span style={{ color: t.text, fontWeight: 600 }}>{fmtInt(M.mcpCalls)}</span> · {M.servers} tools</span>
             </div>
             {P.mcp.length > 0
               ? <BarList key={period} items={P.mcp} theme={t} accent={t.accent} />
-              : <div style={{ font: `500 10px ${t.mono}`, color: t.faint, padding: "2px 0" }}>No MCP calls in this period</div>}
+              : <div style={{ font: `500 10px ${t.mono}`, color: t.faint, padding: "2px 0" }}>No tool calls in this period</div>}
           </>
         )}
         {/* Skill — shown whenever the user has installed skills */}

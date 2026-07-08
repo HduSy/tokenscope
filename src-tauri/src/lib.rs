@@ -1008,39 +1008,34 @@ pub fn run() {
 
             // Filesystem watcher: reflect a log write within ~1s instead of
             // waiting up to the 30s poll (PRD wants <=5s). Writes land in
-            // ~/.claude/projects; our own cache lives elsewhere, so this never
+            // Claude/Codex log dirs; our own cache lives elsewhere, so this never
             // self-triggers. Debounced so a burst of writes coalesces into one
             // rebuild; the 30s poll above stays as a fallback. (build_dashboard
             // serializes on BUILD_LOCK, so this and the poll can't race the cache.)
-            if let Some(projects) = dirs::home_dir().map(|h| h.join(".claude").join("projects")) {
-                let handle = app.handle().clone();
-                std::thread::spawn(move || {
-                    use notify::{RecursiveMode, Watcher};
-                    let (tx, rx) = std::sync::mpsc::channel();
-                    let mut watcher = match notify::recommended_watcher(
-                        move |res: notify::Result<notify::Event>| {
-                            if res.is_ok() {
-                                let _ = tx.send(());
-                            }
-                        },
-                    ) {
-                        Ok(w) => w,
-                        Err(_) => return,
-                    };
-                    // Claude Code may not have created the dir yet on a fresh
-                    // machine; create it so watch() registers instead of silently
-                    // falling back to the 30s poll for the whole session.
-                    let _ = std::fs::create_dir_all(&projects);
-                    if watcher.watch(&projects, RecursiveMode::Recursive).is_err() {
-                        return;
-                    }
-                    // Block for the first change, then drain the burst until quiet.
-                    while rx.recv().is_ok() {
-                        while rx.recv_timeout(Duration::from_millis(400)).is_ok() {}
-                        refresh(&handle);
-                    }
-                });
-            }
+            let roots = store::log_roots();
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                use notify::{RecursiveMode, Watcher};
+                let (tx, rx) = std::sync::mpsc::channel();
+                let mut watcher = match notify::recommended_watcher(
+                    move |res: notify::Result<notify::Event>| {
+                        if res.is_ok() {
+                            let _ = tx.send(());
+                        }
+                    },
+                ) {
+                    Ok(w) => w,
+                    Err(_) => return,
+                };
+                for root in roots {
+                    let _ = std::fs::create_dir_all(&root);
+                    let _ = watcher.watch(&root, RecursiveMode::Recursive);
+                }
+                while rx.recv().is_ok() {
+                    while rx.recv_timeout(Duration::from_millis(400)).is_ok() {}
+                    refresh(&handle);
+                }
+            });
 
             Ok(())
         })

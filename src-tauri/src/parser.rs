@@ -1,5 +1,5 @@
-// Parse ~/.claude/projects/**/*.jsonl, dedupe assistant messages by id,
-// classify tool calls (user-installed MCP / Skill only), and aggregate
+// Parse Claude/Codex JSONL logs, dedupe assistant messages by id,
+// classify tool calls, and aggregate
 // into Day / Week / Month reports + a daily heatmap.
 use crate::config::UserConfig;
 use crate::model::*;
@@ -24,7 +24,7 @@ struct Event {
     output: f64, // raw tokens
     cost: f64,   // USD (differentiated by token type), 0 if unknown model
     priced: bool, // whether a price was found for this model
-    mcp: Vec<String>,   // user-installed server names called in this msg
+    mcp: Vec<String>,   // user-installed server/tool names called in this msg
     skills: Vec<String>, // user-installed skill names called in this msg
 }
 
@@ -104,13 +104,12 @@ pub fn build_dashboard() -> Dashboard {
     let mut month = report_month(&events, now);
     let heatmap = build_heatmap(&events, today);
 
-    // "servers"/"skills" = how many the user has *installed* (global, constant
-    // across periods), not how many were called in the window.
+    // Claude has installed whitelists; Codex tool calls are observed directly.
     let installed_servers = cfg.mcp_servers.len() as u64;
     let installed_skills = cfg.skills.len() as u64;
     for r in [&mut day, &mut week, &mut month] {
-        r.metrics.servers = installed_servers;
-        r.metrics.skills = installed_skills;
+        r.metrics.servers = r.metrics.servers.max(installed_servers);
+        r.metrics.skills = r.metrics.skills.max(installed_skills);
     }
 
     // today's displayed tokens (M) for the tray
@@ -145,7 +144,7 @@ fn compute_event(r: &RawEvent, cfg: &UserConfig, pricing: &Pricing) -> Event {
     let mcp = r
         .mcp
         .iter()
-        .filter(|s| cfg.is_user_mcp(s))
+        .filter(|s| cfg.mcp_servers.is_empty() || cfg.is_user_mcp(s))
         .cloned()
         .collect();
     let skills = r
