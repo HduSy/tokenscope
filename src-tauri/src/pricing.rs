@@ -54,6 +54,29 @@ fn bare(s: &str) -> &str {
     s.rsplit('/').next().unwrap_or(s)
 }
 
+/// Whether `provider` is `id`'s first-party vendor, as opposed to a reseller,
+/// gateway, or cloud that re-lists the same model (often with a markup, or with
+/// cache-token pricing omitted). Lets the authoritative price win regardless of
+/// the order models.dev happens to iterate its providers in. Unknown vendors
+/// return false and fall back to the completeness/bare-id ordering.
+fn is_first_party(provider: &str, id: &str) -> bool {
+    let l = id.to_lowercase();
+    let vendor = if l.contains("claude") {
+        "anthropic"
+    } else if l.contains("gpt") || l.starts_with("o1") || l.starts_with("o3") {
+        "openai"
+    } else if l.contains("gemini") {
+        "google"
+    } else if l.contains("deepseek") {
+        "deepseek"
+    } else if l.contains("grok") {
+        "xai"
+    } else {
+        return false;
+    };
+    provider == vendor
+}
+
 fn cache_dir() -> Option<PathBuf> {
     let dir = dirs::cache_dir()?.join("tokenscope");
     let _ = fs::create_dir_all(&dir);
@@ -203,9 +226,9 @@ impl Pricing {
     fn ingest_modelsdev(&mut self, text: &str) {
         let Ok(json) = serde_json::from_str::<serde_json::Value>(text) else { return };
         let Some(root) = json.as_object() else { return };
-        // gather (id, price); bare ids (no '/') first so official-vendor prices win
-        let mut entries: Vec<(String, ModelPrice)> = Vec::new();
-        for prov in root.values() {
+        // gather (provider, id, price)
+        let mut entries: Vec<(&str, String, ModelPrice)> = Vec::new();
+        for (prov_name, prov) in root {
             let Some(models) = prov.get("models").and_then(|m| m.as_object()) else { continue };
             for (id, m) in models {
                 let Some(c) = m.get("cost").and_then(|c| c.as_object()) else { continue };
@@ -216,11 +239,22 @@ impl Pricing {
                     cache_create: g("cache_write") / 1e6,
                     cache_read: g("cache_read") / 1e6,
                 };
-                entries.push((id.clone(), price));
+                entries.push((prov_name.as_str(), id.clone(), price));
             }
         }
-        entries.sort_by_key(|(id, _)| id.contains('/')); // false(0)=bare first
-        for (id, price) in entries {
+        // insert() is first-writer-wins, so order entries best-first. models.dev
+        // lists the same model under many providers (the first-party vendor plus
+        // resellers / gateways / clouds), and some reseller entries omit
+        // cache-token pricing entirely. Prefer, in order: the model's first-party
+        // vendor; then entries that actually carry cache pricing (so a reseller
+        // that omits it can't zero it out — Claude usage is mostly cache reads, so
+        // dropping cache pricing undercounts cost several-fold); then bare ids over
+        // "vendor/model" duplicates.
+        entries.sort_by_key(|(prov, id, price)| {
+            let has_cache = price.cache_create > 0.0 || price.cache_read > 0.0;
+            (!is_first_party(prov, id), !has_cache, id.contains('/'))
+        });
+        for (_, id, price) in entries {
             self.insert(&id, price);
         }
     }
@@ -294,5 +328,54 @@ impl Pricing {
     #[allow(dead_code)]
     pub fn known(&self, model: &str) -> bool {
         self.lookup(model).is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty() -> Pricing {
+        Pricing {
+            exact: HashMap::new(),
+            norm: HashMap::new(),
+        }
+    }
+
+    fn approx(a: f64, b: f64) -> bool {
+        (a - b).abs() <= b.abs() * 1e-9 + 1e-18
+    }
+
+    // A reseller that omits cache-token pricing and sorts before the first-party
+    // vendor (models.dev iterates providers in key order) must not shadow the
+    // official entry — otherwise cache tokens, which dominate Claude usage, are
+    // priced at zero and cost is undercounted several-fold.
+    #[test]
+    fn first_party_entry_wins_over_cacheless_reseller() {
+        let json = r#"{
+            "abacus":    { "models": { "claude-x": { "cost": { "input": 5, "output": 25 } } } },
+            "anthropic": { "models": { "claude-x": { "cost": { "input": 5, "output": 25, "cache_write": 6.25, "cache_read": 0.5 } } } }
+        }"#;
+        let mut p = empty();
+        p.ingest_modelsdev(json);
+        let price = p.lookup("claude-x").expect("claude-x should be priced");
+        assert!(approx(price.input, 5e-6));
+        assert!(approx(price.output, 25e-6));
+        assert!(approx(price.cache_create, 6.25e-6));
+        assert!(approx(price.cache_read, 0.5e-6));
+    }
+
+    // With no first-party match, a complete price still beats a cache-less one.
+    #[test]
+    fn cache_bearing_entry_wins_when_no_first_party() {
+        let json = r#"{
+            "aaa": { "models": { "acme-1": { "cost": { "input": 2, "output": 4 } } } },
+            "bbb": { "models": { "acme-1": { "cost": { "input": 2, "output": 4, "cache_write": 2.5, "cache_read": 0.2 } } } }
+        }"#;
+        let mut p = empty();
+        p.ingest_modelsdev(json);
+        let price = p.lookup("acme-1").expect("acme-1 should be priced");
+        assert!(approx(price.cache_read, 0.2e-6));
+        assert!(approx(price.cache_create, 2.5e-6));
     }
 }
