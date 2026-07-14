@@ -59,22 +59,36 @@ fn bare(s: &str) -> &str {
 /// cache-token pricing omitted). Lets the authoritative price win regardless of
 /// the order models.dev happens to iterate its providers in. Unknown vendors
 /// return false and fall back to the completeness/bare-id ordering.
+///
+/// Vendors with both an international and a China provider key list both;
+/// subscription-plan keys (`*-coding-plan`, `*-token-plan`) are deliberately
+/// excluded — plan rates aren't the pay-as-you-go API price. When both keys
+/// carry the same bare id, the stable sort keeps models.dev's key order, so the
+/// alphabetically-first (international, USD) entry wins the tie.
 fn is_first_party(provider: &str, id: &str) -> bool {
     let l = id.to_lowercase();
-    let vendor = if l.contains("claude") {
-        "anthropic"
+    let vendors: &[&str] = if l.contains("claude") {
+        &["anthropic"]
     } else if l.contains("gpt") || l.starts_with("o1") || l.starts_with("o3") {
-        "openai"
+        &["openai"]
     } else if l.contains("gemini") {
-        "google"
+        &["google"]
     } else if l.contains("deepseek") {
-        "deepseek"
+        &["deepseek"]
     } else if l.contains("grok") {
-        "xai"
+        &["xai"]
+    } else if l.contains("glm") {
+        &["zai", "zhipuai"]
+    } else if l.contains("qwen") {
+        &["alibaba", "alibaba-cn"]
+    } else if l.contains("kimi") {
+        &["moonshotai", "moonshotai-cn"]
+    } else if l.contains("minimax") {
+        &["minimax", "minimax-cn"]
     } else {
         return false;
     };
-    provider == vendor
+    vendors.contains(&provider)
 }
 
 fn cache_dir() -> Option<PathBuf> {
@@ -363,6 +377,39 @@ mod tests {
         assert!(approx(price.output, 25e-6));
         assert!(approx(price.cache_create, 6.25e-6));
         assert!(approx(price.cache_read, 0.5e-6));
+    }
+
+    // Same shape as the abacus case, but for a Chinese vendor: the cacheless
+    // reseller sorts first alphabetically yet must not shadow the official
+    // zhipuai entry.
+    #[test]
+    fn cn_vendor_entry_wins_over_cacheless_reseller() {
+        let json = r#"{
+            "abacus":  { "models": { "glm-x": { "cost": { "input": 1, "output": 3.2 } } } },
+            "zhipuai": { "models": { "glm-x": { "cost": { "input": 1, "output": 3.2, "cache_write": 1.25, "cache_read": 0.2 } } } }
+        }"#;
+        let mut p = empty();
+        p.ingest_modelsdev(json);
+        let price = p.lookup("glm-x").expect("glm-x should be priced");
+        assert!(approx(price.cache_create, 1.25e-6));
+        assert!(approx(price.cache_read, 0.2e-6));
+    }
+
+    // Both international and -cn keys are first-party; subscription-plan keys
+    // and resellers are not.
+    #[test]
+    fn first_party_vendor_mapping() {
+        assert!(is_first_party("zai", "glm-5"));
+        assert!(is_first_party("zhipuai", "GLM-5.1"));
+        assert!(!is_first_party("zai-coding-plan", "glm-5"));
+        assert!(is_first_party("alibaba", "qwen3-max"));
+        assert!(is_first_party("alibaba-cn", "qwen3-max"));
+        assert!(!is_first_party("alibaba-coding-plan", "qwen3-max"));
+        assert!(is_first_party("moonshotai", "kimi-k2-thinking"));
+        assert!(is_first_party("moonshotai-cn", "kimi-k2-thinking"));
+        assert!(is_first_party("minimax", "MiniMax-M2.5"));
+        assert!(is_first_party("minimax-cn", "MiniMax-M2.5"));
+        assert!(!is_first_party("abacus", "MiniMax-M2.5"));
     }
 
     // With no first-party match, a complete price still beats a cache-less one.
