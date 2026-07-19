@@ -130,51 +130,95 @@ fn valid_litellm(text: &str) -> bool {
 }
 
 /// Read a fresh (<24h) cache for `name`, else fetch `url` & cache it, else fall
-/// back to any stale cache. Returns the raw JSON text. `valid` gates what gets
-/// written to the cache: a 200 carrying a JSON error envelope (CDN/proxy/rate
-/// limit) would otherwise poison the cache for 24h with zero usable prices, so
-/// we only persist a body that actually parses as a price table — and keep the
-/// previous good cache otherwise.
-fn fetch_cached(name: &str, url: &str, valid: impl Fn(&str) -> bool) -> Option<String> {
-    let path = cache_dir()?.join(format!("{name}.json"));
-    if let Ok(meta) = fs::metadata(&path) {
-        let fresh = meta
-            .modified()
-            .ok()
-            .and_then(|m| SystemTime::now().duration_since(m).ok())
-            .map(|age| age < MAX_AGE)
-            .unwrap_or(false);
-        if fresh {
-            if let Ok(t) = fs::read_to_string(&path) {
-                return Some(t);
+/// back to any stale cache. Returns `(text, changed)`: `changed` is true only
+/// when a 200 actually fetched new content (a 304, a fresh local cache, or a
+/// stale fallback all leave it false) — the caller uses it to skip re-parsing
+/// ~5MB of JSON when nothing moved. `force` skips the freshness check and
+/// re-fetches unconditionally (only the tray "Refresh" item passes true; the
+/// 24h background poll passes false). `valid` gates what gets written to the
+/// cache: a 200 carrying a JSON error envelope (CDN/proxy/rate limit) would
+/// otherwise poison the cache for 24h with zero usable prices, so we only
+/// persist a body that actually parses as a price table — and keep the previous
+/// good cache otherwise. Fetches are conditional GETs: we send the last ETag
+/// as If-None-Match, so an unchanged table gets a 304 with no body — skipping
+/// the ~3MB download and the write.
+fn fetch_cached(
+    name: &str,
+    url: &str,
+    valid: impl Fn(&str) -> bool,
+    force: bool,
+) -> (Option<String>, bool) {
+    let Some(dir) = cache_dir() else {
+        return (None, false);
+    };
+    let path = dir.join(format!("{name}.json"));
+    let etag_path = dir.join(format!("{name}.etag"));
+    if !force {
+        if let Ok(meta) = fs::metadata(&path) {
+            let fresh = meta
+                .modified()
+                .ok()
+                .and_then(|m| SystemTime::now().duration_since(m).ok())
+                .map(|age| age < MAX_AGE)
+                .unwrap_or(false);
+            if fresh {
+                if let Ok(t) = fs::read_to_string(&path) {
+                    return (Some(t), false);
+                }
             }
         }
     }
-    // fetch fresh — only overwrite the cache if the body validates as a table
-    if let Ok(resp) = ureq::get(url).timeout(Duration::from_secs(10)).call() {
+    // Conditional GET: send the cached ETag so the CDN can answer 304 (no body)
+    // when the table hasn't changed. Only send an ETag when we still have the
+    // body it describes — an orphan .etag (e.g. user deleted the .json) would
+    // otherwise draw a 304 for a body we no longer have.
+    let cached_etag = fs::read_to_string(&etag_path)
+        .ok()
+        .filter(|_| fs::metadata(&path).is_ok());
+    let mut req = ureq::get(url).timeout(Duration::from_secs(10));
+    if let Some(e) = cached_etag.as_deref() {
+        req = req.set("If-None-Match", e);
+    }
+    if let Ok(resp) = req.call() {
+        if resp.status() == 304 {
+            return (fs::read_to_string(&path).ok(), false);
+        }
+        let new_etag = resp.header("etag").map(str::to_string);
         if let Ok(text) = resp.into_string() {
             if valid(&text) {
                 let _ = fs::write(&path, &text);
-                return Some(text);
+                if let Some(etag) = new_etag {
+                    let _ = fs::write(&etag_path, etag);
+                }
+                return (Some(text), true);
             }
         }
     }
     // stale cache as last resort
-    fs::read_to_string(&path).ok()
+    (fs::read_to_string(&path).ok(), false)
 }
 
 impl Pricing {
-    pub fn load() -> Self {
+    pub fn load(force: bool) -> Option<Self> {
+        let (md, md_changed) = fetch_cached("modelsdev", MODELSDEV_URL, valid_modelsdev, force);
+        let (ll, ll_changed) = fetch_cached("litellm", LITELLM_URL, valid_litellm, force);
+        // Nothing moved (both 304 / fresh cache / stale fallback) and we already
+        // have a table loaded — skip the ~5MB re-parse and keep the current one.
+        // First-ever load still parses (PRICING is unset) so a table exists
+        // before the first build_dashboard runs.
+        if PRICING.get().is_some() && !md_changed && !ll_changed {
+            return None;
+        }
         let mut p = Pricing {
             exact: HashMap::new(),
             norm: HashMap::new(),
         };
         // 1. models.dev — primary (inserted first, so it wins on conflict)
-        if let Some(text) = fetch_cached("modelsdev", MODELSDEV_URL, valid_modelsdev) {
+        if let Some(text) = md {
             p.ingest_modelsdev(&text);
         }
         // 2. LiteLLM — fills gaps models.dev doesn't cover
-        if let Some(text) = fetch_cached("litellm", LITELLM_URL, valid_litellm) {
+        if let Some(text) = ll {
             p.ingest_litellm(&text);
         }
         // 3. bundled LiteLLM snapshot — offline fallback for anything the live
@@ -182,7 +226,7 @@ impl Pricing {
         p.ingest_litellm(LITELLM_SNAPSHOT);
         // 4. built-in backstop (a handful of core models, last resort)
         p.ingest_builtin();
-        p
+        Some(p)
     }
 
     /// Just the built-in snapshot — no disk, no network. Returned by `shared()`
@@ -212,8 +256,11 @@ impl Pricing {
     /// Load the full table (cache read + network on cold/stale cache) and swap it
     /// into the shared cell. MUST run on a background thread — never the main
     /// thread or a BUILD_LOCK holder — since the fetch can block up to ~20s.
-    pub fn reload_shared() {
-        let p = Arc::new(Pricing::load());
+    pub fn reload_shared(force: bool) {
+        let Some(p) = Pricing::load(force) else {
+            return; // nothing changed — keep the current table, no re-parse, no swap
+        };
+        let p = Arc::new(p);
         match PRICING.get() {
             Some(lock) => {
                 if let Ok(mut g) = lock.write() {
