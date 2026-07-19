@@ -1,3 +1,4 @@
+/// <reference types="vite/client" />
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
@@ -16,6 +17,14 @@ style.textContent = `
   .ts-no-transition, .ts-no-transition * { transition: none !important; }
 `;
 document.head.appendChild(style);
+
+// WKWebView (macOS) and WebView2 (Windows) both surface a built-in context
+// menu on right-click (Reload / Back / Inspect). Reload is dangerous here — it
+// re-mounts the whole panel UI and freezes it mid-load — so suppress the menu
+// in production. Dev keeps it for Inspect Element.
+if (import.meta.env.PROD) {
+  window.addEventListener("contextmenu", (e) => e.preventDefault());
+}
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
