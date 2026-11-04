@@ -38,15 +38,7 @@ fn now_ms() -> i64 {
 /// the fresh data to the UI so an open popover updates live.
 fn refresh(app: &tauri::AppHandle) {
     let dash = parser::build_dashboard();
-    if let Some(tray) = app.tray_by_id("main") {
-        let label = fmt_tokens_m(dash.today_tokens);
-        // macOS shows the label next to the menu-bar icon (set_title). Windows'
-        // taskbar tray has no equivalent — set_title is a no-op there — so we
-        // surface the same number through the hover tooltip instead, the only
-        // text channel Shell_NotifyIcon exposes for a tray icon.
-        let _ = tray.set_title(Some(label.clone()));
-        let _ = tray.set_tooltip(Some(format!("Tokenscope · today {}", label)));
-    }
+    update_tray(app, &dash);
     check_milestones(app, &dash);
     let _ = app.emit("dashboard-updated", &dash);
 }
@@ -103,6 +95,68 @@ fn autostart_pref_path() -> Option<std::path::PathBuf> {
     let dir = dirs::data_dir()?.join("tokenscope");
     let _ = std::fs::create_dir_all(&dir);
     Some(dir.join("autostart.json"))
+}
+
+// ── Tray period preference ──────────────────────────────────────────
+// Which dashboard dimension (day/week/month) the tray's token count shows.
+// Follows the period segmented control in the panel: switching it persists
+// here so the tray keeps showing the last-chosen dimension across restarts.
+// Persisted in the data dir alongside autostart for the same durability.
+const TRAY_PERIODS: [&str; 3] = ["Day", "Week", "Month"];
+
+fn tray_period_pref_path() -> Option<std::path::PathBuf> {
+    let dir = dirs::data_dir()?.join("tokenscope");
+    let _ = std::fs::create_dir_all(&dir);
+    Some(dir.join("tray_period.json"))
+}
+
+/// Stored period, or "Week" (the panel's default) when unset/invalid.
+fn load_tray_period() -> String {
+    let Ok(t) = std::fs::read_to_string(tray_period_pref_path().unwrap_or_default()) else {
+        return "Week".to_string();
+    };
+    let p = t.trim().to_string();
+    if TRAY_PERIODS.contains(&p.as_str()) {
+        p
+    } else {
+        "Week".to_string()
+    }
+}
+
+fn save_tray_period(period: &str) {
+    if let Some(p) = tray_period_pref_path() {
+        let _ = std::fs::write(p, period);
+    }
+}
+
+/// The selected period's total tokens (M) — what the tray label counts.
+fn period_tokens(dash: &Dashboard, period: &str) -> f64 {
+    match period {
+        "Day" => dash.day.metrics.total_tokens,
+        "Month" => dash.month.metrics.total_tokens,
+        _ => dash.week.metrics.total_tokens,
+    }
+}
+
+/// Tooltip qualifier so Windows users (who only see the tooltip) know which
+/// window the number covers.
+fn period_scope(period: &str) -> &'static str {
+    match period {
+        "Day" => "today",
+        "Month" => "this month",
+        _ => "this week",
+    }
+}
+
+/// Push the selected period's token count to the tray (macOS: menu-bar title;
+/// Windows: tooltip, the only text channel Shell_NotifyIcon exposes).
+fn update_tray(app: &tauri::AppHandle, dash: &Dashboard) {
+    if let Some(tray) = app.tray_by_id("main") {
+        let period = load_tray_period();
+        let label = fmt_tokens_m(period_tokens(dash, &period));
+        let _ = tray.set_title(Some(label.clone()));
+        let _ = tray.set_tooltip(Some(format!("Tokenscope · {} {}", period_scope(&period), label)));
+    }
 }
 
 fn load_autostart_pref() -> Option<bool> {
@@ -672,13 +726,7 @@ async fn get_dashboard(app: tauri::AppHandle) -> Dashboard {
     // Sync the tray count to this freshly-fetched value. The panel refetches the
     // instant it opens, while the tray otherwise only refreshes every 30s — so
     // without this the two could disagree for up to 30s during heavy usage.
-    if let Some(tray) = app.tray_by_id("main") {
-        let label = fmt_tokens_m(dash.today_tokens);
-        let _ = tray.set_title(Some(label.clone()));
-        // Mirror refresh(): keep the tooltip in sync for Windows, where the
-        // title isn't shown next to the icon.
-        let _ = tray.set_tooltip(Some(format!("Tokenscope · today {}", label)));
-    }
+    update_tray(&app, &dash);
     check_milestones(&app, &dash);
     dash
 }
@@ -718,6 +766,26 @@ fn refresh_pricing_bg(app: &tauri::AppHandle) {
 #[tauri::command]
 fn refresh_pricing(app: tauri::AppHandle) {
     refresh_pricing_bg(&app);
+}
+
+/// Current tray period ("Day" | "Week" | "Month") — the panel uses it to
+/// restore its segmented control to what the tray is showing.
+#[tauri::command]
+fn get_tray_period() -> String {
+    load_tray_period()
+}
+
+/// Persist the tray period (fired when the panel's segmented control changes)
+/// and re-render the tray label immediately so it never lags the panel.
+#[tauri::command]
+fn set_tray_period(app: tauri::AppHandle, period: String) -> Result<(), String> {
+    if !TRAY_PERIODS.contains(&period.as_str()) {
+        return Err(format!("invalid period: {period}"));
+    }
+    save_tray_period(&period);
+    let dash = parser::build_dashboard();
+    update_tray(&app, &dash);
+    Ok(())
 }
 
 /// Save a full-panel screenshot (a `data:image/png;base64,...` URL captured in
@@ -794,6 +862,8 @@ pub fn run() {
             save_screenshot,
             begin_drag,
             refresh_pricing,
+            get_tray_period,
+            set_tray_period,
         ])
         .setup(move |app| {
             // Menu-bar–only app: no Dock icon, runs in the background.

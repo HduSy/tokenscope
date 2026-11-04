@@ -198,6 +198,26 @@ function Panel({ dash, dark, themePref, onToggleTheme, openGen, active }: { dash
   const canDrag = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window && !navigator.userAgent.includes("Macintosh");
   const dragRef = useRef<{ x: number; y: number } | null>(null);
   const [period, setPeriod] = useState<"Day" | "Week" | "Month">("Week");
+  // Switching the period also drives the tray's token count: the choice is
+  // persisted via set_tray_period and the tray re-renders immediately. The
+  // restore below only runs before the first user interaction, so a slow
+  // get_tray_period response can't overwrite a period the user just picked.
+  const periodTouched = useRef(false);
+  const selectPeriod = (v: string) => {
+    periodTouched.current = true;
+    setPeriod(v as "Day" | "Week" | "Month");
+    invoke("set_tray_period", { period: v }).catch(() => {});
+  };
+  useEffect(() => {
+    if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) return;
+    invoke<string>("get_tray_period")
+      .then((p) => {
+        if (!periodTouched.current && (p === "Day" || p === "Week" || p === "Month")) {
+          setPeriod(p);
+        }
+      })
+      .catch(() => {});
+  }, []);
   const P: PeriodReport = period === "Day" ? dash.day : period === "Month" ? dash.month : dash.week;
   const M = P.metrics;
   // animated Total tokens: counts up from 0 on each open / period switch;
@@ -321,7 +341,7 @@ function Panel({ dash, dark, themePref, onToggleTheme, openGen, active }: { dash
             <span style={{ font: `600 13px ${t.ui}`, color: t.text, letterSpacing: ".01em" }}>Tokenscope</span>
           </div>
           <div data-no-drag="" style={{ display: "flex", alignItems: "center", gap: 8, cursor: "default" }}>
-            <Segmented value={period} theme={t} onSelect={(v) => setPeriod(v as any)} />
+            <Segmented value={period} theme={t} onSelect={selectPeriod} />
             <ThemeToggle pref={themePref} theme={t} onCycle={onToggleTheme} />
             <ScreenshotButton theme={t} busy={shotBusy} onClick={captureScreenshot} />
           </div>
