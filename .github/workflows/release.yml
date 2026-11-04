@@ -148,7 +148,7 @@ jobs:
             desc "macOS menu-bar dashboard for Claude CLI token usage"
             homepage "https://github.com/HduSy/tokenscope"
 
-            depends_on macos: ">= :catalina"
+            depends_on macos: :catalina
 
             app "Tokenscope.app"
 
